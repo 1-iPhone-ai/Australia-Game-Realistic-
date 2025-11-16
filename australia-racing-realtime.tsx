@@ -237,6 +237,11 @@ export default function AustraliaRacingGame() {
 
   const aiIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const gameStartTime = useRef<number>(Date.now());
+  const aiActionLockRef = useRef<boolean>(false);
+  const gameStatusRef = useRef<'active' | 'ended'>(gameState.gameStatus);
+  const aiStateRef = useRef(aiState);
+  const regionsRef = useRef(regions);
+  const gameStateRef = useRef(gameState);
 
   // =========================================
   // UTILITY FUNCTIONS
@@ -258,6 +263,23 @@ export default function AustraliaRacingGame() {
 
   const getRegionsControlled = useCallback((player: 'player' | 'ai'): string[] => {
     return Object.keys(regions).filter(regionKey => regions[regionKey].controller === player);
+  }, [regions]);
+
+  // =========================================
+  // REFS SYNC (Keep refs updated)
+  // =========================================
+
+  useEffect(() => {
+    gameStatusRef.current = gameState.gameStatus;
+    gameStateRef.current = gameState;
+  }, [gameState]);
+
+  useEffect(() => {
+    aiStateRef.current = aiState;
+  }, [aiState]);
+
+  useEffect(() => {
+    regionsRef.current = regions;
   }, [regions]);
 
   // =========================================
@@ -462,244 +484,446 @@ export default function AustraliaRacingGame() {
   };
 
   // =========================================
+  // AI VALIDATION HELPERS
+  // =========================================
+
+  const canAfford = useCallback((cost: number): boolean => {
+    const currentBudget = aiStateRef.current.budget;
+    const reserveFund = Math.max(100, currentBudget * 0.1); // Keep 10% or $100 reserve
+    return cost > 0 && cost <= (currentBudget - reserveFund);
+  }, []);
+
+  const hasTimeFor = useCallback((duration: number): boolean => {
+    const timeLeft = gameStateRef.current.timeRemaining;
+    const buffer = 5; // 5 second safety buffer
+    return timeLeft >= (duration + buffer);
+  }, []);
+
+  const validateBudgetTransaction = useCallback((cost: number): boolean => {
+    if (cost <= 0) return false;
+    if (cost > aiStateRef.current.budget) return false;
+    return true;
+  }, []);
+
+  const revalidateRegionState = useCallback((regionKey: string) => {
+    const currentRegions = regionsRef.current;
+    if (!currentRegions[regionKey]) return null;
+    return currentRegions[regionKey];
+  }, []);
+
+  // =========================================
   // AI DECISION ENGINE
   // =========================================
 
   const aiTakeAction = useCallback(async () => {
-    if (aiState.isBusy || aiState.isTraveling || gameState.gameStatus !== 'active') return;
+    // CRITICAL FIX #1 & #7: Check action lock to prevent concurrent actions
+    if (aiActionLockRef.current) return;
+    if (aiStateRef.current.isBusy || aiStateRef.current.isTraveling) return;
+    if (gameStatusRef.current !== 'active') return;
 
-    // Evaluate all possible actions
-    const actions: Array<{ type: string; value: number; data: any }> = [];
+    // CRITICAL FIX #7: Set action lock
+    aiActionLockRef.current = true;
 
-    // 1. Evaluate challenges
-    const currentRegionChallenges = REGIONS[aiState.currentRegion].challenges;
-    currentRegionChallenges.forEach(challenge => {
-      const optimalWager = Math.min(Math.floor(aiState.budget * 0.3), 500);
-      if (optimalWager < 50) return;
+    try {
+      // CRITICAL FIX #4: Use refs for latest state
+      const currentAiState = aiStateRef.current;
+      const currentRegions = regionsRef.current;
+      const currentGameState = gameStateRef.current;
 
-      const expectedValue =
-        (challenge.multiplier * challenge.baseSuccessChance * optimalWager) -
-        (optimalWager * (1 - challenge.baseSuccessChance));
+      // Evaluate all possible actions
+      const actions: Array<{ type: string; value: number; data: any }> = [];
 
-      actions.push({
-        type: 'challenge',
-        value: expectedValue,
-        data: { challenge, wager: optimalWager },
+      // 1. Evaluate challenges
+      const currentRegionChallenges = REGIONS[currentAiState.currentRegion].challenges;
+      currentRegionChallenges.forEach(challenge => {
+        // CRITICAL FIX #8: Check time before adding action
+        if (!hasTimeFor(challenge.duration)) return;
+
+        // CRITICAL FIX #2 & #9: Calculate wager with proper budget constraints
+        const maxWager = Math.floor(currentAiState.budget * 0.3);
+        const optimalWager = Math.min(maxWager, 500);
+        if (optimalWager < 50) return;
+
+        // CRITICAL FIX #2: Validate affordability
+        if (!canAfford(optimalWager)) return;
+
+        // CRITICAL FIX #9: Improved expected value with risk consideration
+        const expectedReturn = challenge.multiplier * challenge.baseSuccessChance * optimalWager;
+        const expectedLoss = optimalWager * (1 - challenge.baseSuccessChance);
+        const expectedValue = expectedReturn - expectedLoss;
+
+        // Consider time efficiency
+        const valuePerSecond = expectedValue / challenge.duration;
+
+        actions.push({
+          type: 'challenge',
+          value: valuePerSecond * 100, // Weight by efficiency
+          data: { challenge, wager: optimalWager },
+        });
       });
-    });
 
-    // 2. Evaluate flights
-    const unvisitedRegions = Object.keys(REGIONS).filter(
-      r => r !== aiState.currentRegion && !aiState.visitedRegions.includes(r)
-    );
+      // 2. Evaluate flights
+      const unvisitedRegions = Object.keys(REGIONS).filter(
+        r => r !== currentAiState.currentRegion && !currentAiState.visitedRegions.includes(r)
+      );
 
-    unvisitedRegions.forEach(destination => {
-      const cost = FLIGHT_COSTS[aiState.currentRegion][destination];
-      if (cost > aiState.budget * 0.5) return;
+      unvisitedRegions.forEach(destination => {
+        const cost = FLIGHT_COSTS[currentAiState.currentRegion][destination];
+        const duration = FLIGHT_DURATIONS[currentAiState.currentRegion][destination];
 
-      const welcomeBonus = regions[destination].welcomeBonusAvailable ? 750 : 0;
-      const value = welcomeBonus - cost + 200;
+        // CRITICAL FIX #8: Check time
+        if (!hasTimeFor(duration)) return;
 
-      actions.push({
-        type: 'travel',
-        value,
-        data: { destination, cost, duration: FLIGHT_DURATIONS[aiState.currentRegion][destination] },
+        // CRITICAL FIX #2: Validate budget
+        if (!validateBudgetTransaction(cost)) return;
+        if (!canAfford(cost)) return;
+
+        // CRITICAL FIX #5: Use current regions state for bonus check
+        const welcomeBonus = currentRegions[destination].welcomeBonusAvailable ? 750 : 0;
+        const value = welcomeBonus - cost + 200;
+
+        actions.push({
+          type: 'travel',
+          value,
+          data: { destination, cost, duration },
+        });
       });
-    });
 
-    // 3. Evaluate deposits
-    const currentRegion = regions[aiState.currentRegion];
-    const aiDeposit = currentRegion.aiDeposit;
-    const playerDeposit = currentRegion.playerDeposit;
+      // 3. Evaluate deposits
+      const currentRegion = currentRegions[currentAiState.currentRegion];
+      if (!currentRegion) return; // CRITICAL FIX #4: Validate region exists
 
-    // Try to steal player regions
-    if (currentRegion.controller === 'player' && aiState.budget > playerDeposit + 100) {
-      actions.push({
-        type: 'deposit',
-        value: 600, // High value to steal
-        data: { amount: Math.min(playerDeposit + 150, aiState.budget * 0.4) },
-      });
-    }
+      const aiDeposit = currentRegion.aiDeposit;
+      const playerDeposit = currentRegion.playerDeposit;
 
-    // Secure uncontrolled regions
-    if (currentRegion.controller === null && aiState.budget > 100) {
-      actions.push({
-        type: 'deposit',
-        value: 300,
-        data: { amount: Math.min(200, aiState.budget * 0.2) },
-      });
-    }
+      // Try to steal player regions
+      if (currentRegion.controller === 'player') {
+        // CRITICAL FIX #10: Proper deposit calculation within budget
+        const amountToSteal = playerDeposit - aiDeposit + 1;
+        const maxAffordable = Math.floor(currentAiState.budget * 0.4);
+        const actualAmount = Math.min(amountToSteal + 50, maxAffordable);
 
-    // Defend regions
-    if (currentRegion.controller === 'ai' &&
-        playerState.currentRegion === aiState.currentRegion &&
-        playerState.budget > aiDeposit) {
-      actions.push({
-        type: 'deposit',
-        value: 500,
-        data: { amount: Math.min(aiState.budget * 0.3, aiDeposit * 1.5) },
-      });
-    }
-
-    // Pick best action
-    if (actions.length === 0) return;
-
-    actions.sort((a, b) => b.value - a.value);
-    const bestAction = actions[0];
-
-    // Execute action
-    if (bestAction.type === 'challenge') {
-      const { challenge, wager } = bestAction.data;
-
-      setAiState(prev => ({
-        ...prev,
-        isBusy: true,
-        currentActivity: `Attempting ${challenge.name}...`,
-      }));
-
-      addLog(`🤖 AI attempting "${challenge.name}" ($${wager} wagered)`, 'warning', 'ai');
-
-      await delay(challenge.duration * 1000);
-
-      const success = Math.random() < challenge.baseSuccessChance;
-
-      if (success) {
-        const winnings = Math.floor(wager * challenge.multiplier);
-        setAiState(prev => ({
-          ...prev,
-          budget: prev.budget + winnings,
-          isBusy: false,
-          currentActivity: null,
-        }));
-        addLog(`🤖 AI completed "${challenge.name}"! Won $${winnings}`, 'warning', 'ai');
-      } else {
-        setAiState(prev => ({
-          ...prev,
-          budget: prev.budget - wager,
-          isBusy: false,
-          currentActivity: null,
-        }));
-        addLog(`🤖 AI failed "${challenge.name}". Lost $${wager}`, 'info', 'ai');
-      }
-    } else if (bestAction.type === 'travel') {
-      const { destination, cost, duration } = bestAction.data;
-
-      setAiState(prev => ({
-        ...prev,
-        budget: prev.budget - cost,
-        isTraveling: true,
-        travelDestination: destination,
-        travelProgress: 0,
-      }));
-
-      addLog(`🤖 AI flying to ${REGIONS[destination].name}...`, 'warning', 'ai');
-
-      const startTime = Date.now();
-      const endTime = startTime + (duration * 1000);
-
-      const progressInterval = setInterval(() => {
-        const now = Date.now();
-        const progress = Math.min(100, ((now - startTime) / (duration * 1000)) * 100);
-        setAiState(prev => ({ ...prev, travelProgress: progress }));
-
-        if (now >= endTime) {
-          clearInterval(progressInterval);
+        if (actualAmount > 0 && canAfford(actualAmount)) {
+          actions.push({
+            type: 'deposit',
+            value: 600, // High value to steal
+            data: { amount: actualAmount },
+          });
         }
-      }, 100);
+      }
 
-      await delay(duration * 1000);
+      // Secure uncontrolled regions
+      if (currentRegion.controller === null) {
+        // CRITICAL FIX #10: Ensure amount doesn't exceed budget
+        const maxAffordable = Math.floor(currentAiState.budget * 0.2);
+        const actualAmount = Math.min(200, maxAffordable);
 
-      const bonusAwarded = regions[destination].welcomeBonusAvailable;
-      let bonusAmount = 0;
+        if (actualAmount > 0 && canAfford(actualAmount)) {
+          actions.push({
+            type: 'deposit',
+            value: 300,
+            data: { amount: actualAmount },
+          });
+        }
+      }
 
-      if (bonusAwarded) {
-        bonusAmount = 750;
+      // Defend regions
+      if (currentRegion.controller === 'ai' &&
+          playerState.currentRegion === currentAiState.currentRegion &&
+          playerState.budget > aiDeposit) {
+        // CRITICAL FIX #10: Proper calculation
+        const defenseAmount = Math.floor(aiDeposit * 0.5);
+        const maxAffordable = Math.floor(currentAiState.budget * 0.3);
+        const actualAmount = Math.min(defenseAmount, maxAffordable);
+
+        if (actualAmount > 0 && canAfford(actualAmount)) {
+          actions.push({
+            type: 'deposit',
+            value: 500,
+            data: { amount: actualAmount },
+          });
+        }
+      }
+
+      // Pick best action
+      if (actions.length === 0) return;
+
+      // CRITICAL FIX #3: Sort and verify best action is affordable
+      actions.sort((a, b) => b.value - a.value);
+
+      // Find first affordable action
+      let bestAction = null;
+      for (const action of actions) {
+        if (action.type === 'challenge' && canAfford(action.data.wager)) {
+          bestAction = action;
+          break;
+        } else if (action.type === 'travel' && canAfford(action.data.cost)) {
+          bestAction = action;
+          break;
+        } else if (action.type === 'deposit' && canAfford(action.data.amount)) {
+          bestAction = action;
+          break;
+        }
+      }
+
+      if (!bestAction) return;
+
+      // Execute action
+      if (bestAction.type === 'challenge') {
+        const { challenge, wager } = bestAction.data;
+
+        // CRITICAL FIX #2 & #4: Revalidate budget before spending
+        if (!validateBudgetTransaction(wager)) {
+          addLog(`🤖 AI skipped challenge - insufficient budget`, 'info', 'ai');
+          return;
+        }
+
+        // CRITICAL FIX #8: Recheck time availability
+        if (!hasTimeFor(challenge.duration)) {
+          addLog(`🤖 AI skipped challenge - insufficient time`, 'info', 'ai');
+          return;
+        }
+
+        setAiState(prev => ({
+          ...prev,
+          isBusy: true,
+          currentActivity: `Attempting ${challenge.name}...`,
+        }));
+
+        addLog(`🤖 AI attempting "${challenge.name}" ($${wager} wagered)`, 'warning', 'ai');
+
+        await delay(challenge.duration * 1000);
+
+        // CRITICAL FIX #1: Check game still active after delay
+        if (gameStatusRef.current !== 'active') {
+          setAiState(prev => ({ ...prev, isBusy: false, currentActivity: null }));
+          return;
+        }
+
+        const success = Math.random() < challenge.baseSuccessChance;
+
+        if (success) {
+          const winnings = Math.floor(wager * challenge.multiplier);
+          setAiState(prev => ({
+            ...prev,
+            budget: prev.budget + winnings,
+            isBusy: false,
+            currentActivity: null,
+          }));
+          addLog(`🤖 AI completed "${challenge.name}"! Won $${winnings}`, 'warning', 'ai');
+        } else {
+          setAiState(prev => ({
+            ...prev,
+            budget: prev.budget - wager,
+            isBusy: false,
+            currentActivity: null,
+          }));
+          addLog(`🤖 AI failed "${challenge.name}". Lost $${wager}`, 'info', 'ai');
+        }
+      } else if (bestAction.type === 'travel') {
+        const { destination, cost, duration } = bestAction.data;
+
+        // CRITICAL FIX #2 & #4: Revalidate budget before spending
+        if (!validateBudgetTransaction(cost)) {
+          addLog(`🤖 AI skipped travel - insufficient budget`, 'info', 'ai');
+          return;
+        }
+
+        // CRITICAL FIX #8: Recheck time availability
+        if (!hasTimeFor(duration)) {
+          addLog(`🤖 AI skipped travel - insufficient time`, 'info', 'ai');
+          return;
+        }
+
+        setAiState(prev => ({
+          ...prev,
+          budget: prev.budget - cost,
+          isTraveling: true,
+          travelDestination: destination,
+          travelProgress: 0,
+        }));
+
+        addLog(`🤖 AI flying to ${REGIONS[destination].name}...`, 'warning', 'ai');
+
+        const startTime = Date.now();
+        const endTime = startTime + (duration * 1000);
+
+        const progressInterval = setInterval(() => {
+          const now = Date.now();
+          const progress = Math.min(100, ((now - startTime) / (duration * 1000)) * 100);
+          setAiState(prev => ({ ...prev, travelProgress: progress }));
+
+          if (now >= endTime) {
+            clearInterval(progressInterval);
+          }
+        }, 100);
+
+        await delay(duration * 1000);
+
+        // CRITICAL FIX #1: Check game still active after delay
+        if (gameStatusRef.current !== 'active') {
+          clearInterval(progressInterval);
+          setAiState(prev => ({ ...prev, isTraveling: false, travelDestination: null, travelProgress: 0 }));
+          return;
+        }
+
+        // CRITICAL FIX #5: Revalidate bonus availability
+        const currentRegionState = revalidateRegionState(destination);
+        const bonusAwarded = currentRegionState?.welcomeBonusAvailable || false;
+        let bonusAmount = 0;
+
+        if (bonusAwarded) {
+          bonusAmount = 750;
+          setRegions(prev => ({
+            ...prev,
+            [destination]: { ...prev[destination], welcomeBonusAvailable: false },
+          }));
+          addLog(`⚠️ AI claimed welcome bonus in ${REGIONS[destination].name}! +$${bonusAmount}`, 'warning', 'ai');
+        }
+
+        setAiState(prev => ({
+          ...prev,
+          currentRegion: destination,
+          isTraveling: false,
+          travelDestination: null,
+          travelProgress: 0,
+          budget: prev.budget + bonusAmount,
+          visitedRegions: prev.visitedRegions.includes(destination)
+            ? prev.visitedRegions
+            : [...prev.visitedRegions, destination],
+        }));
+
         setRegions(prev => ({
           ...prev,
-          [destination]: { ...prev[destination], welcomeBonusAvailable: false },
+          [destination]: { ...prev[destination], aiVisited: true },
         }));
-        addLog(`⚠️ AI claimed welcome bonus in ${REGIONS[destination].name}! +$${bonusAmount}`, 'warning', 'ai');
-      }
 
+        addLog(`🤖 AI arrived in ${REGIONS[destination].name}`, 'warning', 'ai');
+      } else if (bestAction.type === 'deposit') {
+        const { amount } = bestAction.data;
+
+        // CRITICAL FIX #2 & #4: Revalidate budget before spending
+        if (!validateBudgetTransaction(amount)) {
+          addLog(`🤖 AI skipped deposit - insufficient budget`, 'info', 'ai');
+          return;
+        }
+
+        // CRITICAL FIX #4: Use current state refs
+        const region = aiStateRef.current.currentRegion;
+        const currentRegionState = revalidateRegionState(region);
+
+        if (!currentRegionState) {
+          addLog(`🤖 AI skipped deposit - invalid region state`, 'info', 'ai');
+          return;
+        }
+
+        const newAiDeposit = currentRegionState.aiDeposit + amount;
+        const playerDeposit = currentRegionState.playerDeposit;
+
+        setAiState(prev => ({
+          ...prev,
+          budget: prev.budget - amount,
+        }));
+
+        const wasControlled = currentRegionState.controller;
+        const newController = newAiDeposit > playerDeposit ? 'ai' : (playerDeposit > newAiDeposit ? 'player' : null);
+
+        setRegions(prev => ({
+          ...prev,
+          [region]: {
+            ...prev[region],
+            aiDeposit: newAiDeposit,
+            controller: newController,
+          },
+        }));
+
+        if (wasControlled === 'player' && newController === 'ai') {
+          addLog(`⚠️ AI STOLE ${REGIONS[region].name} from you! ($${newAiDeposit} deposited)`, 'error', 'ai');
+        } else if (wasControlled !== newController && newController === 'ai') {
+          addLog(`🤖 AI now controls ${REGIONS[region].name}! ($${newAiDeposit})`, 'warning', 'ai');
+        } else {
+          addLog(`🤖 AI deposited $${amount} in ${REGIONS[region].name}`, 'info', 'ai');
+        }
+      }
+    } catch (error) {
+      // CRITICAL FIX #6: Error handling
+      console.error('AI action failed:', error);
+      addLog(`🤖 AI encountered an error and skipped action`, 'info', 'ai');
+
+      // Reset AI state if stuck
       setAiState(prev => ({
         ...prev,
-        currentRegion: destination,
+        isBusy: false,
         isTraveling: false,
+        currentActivity: null,
         travelDestination: null,
         travelProgress: 0,
-        budget: prev.budget + bonusAmount,
-        visitedRegions: prev.visitedRegions.includes(destination)
-          ? prev.visitedRegions
-          : [...prev.visitedRegions, destination],
       }));
-
-      setRegions(prev => ({
-        ...prev,
-        [destination]: { ...prev[destination], aiVisited: true },
-      }));
-
-      addLog(`🤖 AI arrived in ${REGIONS[destination].name}`, 'warning', 'ai');
-    } else if (bestAction.type === 'deposit') {
-      const { amount } = bestAction.data;
-      const region = aiState.currentRegion;
-      const newAiDeposit = regions[region].aiDeposit + amount;
-      const playerDeposit = regions[region].playerDeposit;
-
-      setAiState(prev => ({
-        ...prev,
-        budget: prev.budget - amount,
-      }));
-
-      const wasControlled = regions[region].controller;
-      const newController = newAiDeposit > playerDeposit ? 'ai' : (playerDeposit > newAiDeposit ? 'player' : null);
-
-      setRegions(prev => ({
-        ...prev,
-        [region]: {
-          ...prev[region],
-          aiDeposit: newAiDeposit,
-          controller: newController,
-        },
-      }));
-
-      if (wasControlled === 'player' && newController === 'ai') {
-        addLog(`⚠️ AI STOLE ${REGIONS[region].name} from you! ($${newAiDeposit} deposited)`, 'error', 'ai');
-      } else if (wasControlled !== newController && newController === 'ai') {
-        addLog(`🤖 AI now controls ${REGIONS[region].name}! ($${newAiDeposit})`, 'warning', 'ai');
-      } else {
-        addLog(`🤖 AI deposited $${amount} in ${REGIONS[region].name}`, 'info', 'ai');
-      }
+    } finally {
+      // CRITICAL FIX #7: Always release lock
+      aiActionLockRef.current = false;
     }
-  }, [aiState, playerState, regions, gameState.gameStatus, addLog]);
+  }, [playerState, addLog, canAfford, hasTimeFor, validateBudgetTransaction, revalidateRegionState]);
 
   // =========================================
   // AI CONTINUOUS LOOP
   // =========================================
 
   useEffect(() => {
-    if (gameState.gameStatus !== 'active') {
-      if (aiIntervalRef.current) {
-        clearInterval(aiIntervalRef.current);
-      }
+    // CRITICAL FIX #1: Use ref for game status to avoid stale closure
+    if (gameStatusRef.current !== 'active') {
       return;
     }
 
+    // CRITICAL FIX #12: Track if component is mounted for cleanup
+    let isMounted = true;
+    let timeoutId: NodeJS.Timeout | null = null;
+
     const runAI = async () => {
-      while (gameState.gameStatus === 'active') {
+      // CRITICAL FIX #1: Check ref instead of closure variable
+      while (isMounted && gameStatusRef.current === 'active') {
+        // CRITICAL FIX #8: Don't start new action if time is running out
+        if (gameStateRef.current.timeRemaining < 10) {
+          // Less than 10 seconds left, wait for next day
+          await delay(1000);
+          continue;
+        }
+
         await aiTakeAction();
-        // Random delay between 5-15 seconds for demo (10-30 in real game)
-        await delay(Math.random() * 10000 + 5000);
+
+        // Random delay between 5-15 seconds for demo
+        const delayMs = Math.random() * 10000 + 5000;
+
+        // CRITICAL FIX #12: Use breakable delay for cleanup
+        await new Promise<void>((resolve) => {
+          timeoutId = setTimeout(() => {
+            if (isMounted && gameStatusRef.current === 'active') {
+              resolve();
+            } else {
+              resolve(); // Still resolve to prevent hanging
+            }
+          }, delayMs);
+        });
+
+        // CRITICAL FIX #1: Double-check game status after delay
+        if (gameStatusRef.current !== 'active') {
+          break;
+        }
       }
     };
 
     runAI();
 
+    // CRITICAL FIX #12: Cleanup function
     return () => {
-      if (aiIntervalRef.current) {
-        clearInterval(aiIntervalRef.current);
+      isMounted = false;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
       }
+      // Release lock if held during unmount
+      aiActionLockRef.current = false;
     };
-  }, [gameState.gameStatus, aiTakeAction]);
+  }, [aiTakeAction]);
 
   // =========================================
   // RENDER
