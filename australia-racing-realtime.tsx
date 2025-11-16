@@ -243,6 +243,18 @@ export default function AustraliaRacingGame() {
   const regionsRef = useRef(regions);
   const gameStateRef = useRef(gameState);
 
+  // AI SOPHISTICATION: Track action history for strategic diversity
+  const aiActionHistory = useRef<Array<{
+    type: 'challenge' | 'travel' | 'deposit';
+    timestamp: number;
+    challengeName?: string;
+    region?: string;
+    wager?: number;
+  }>>([]);
+  const aiLastChallengesByRegion = useRef<Record<string, string>>({});
+  const aiConsecutiveActionTypes = useRef<string[]>([]);
+  const aiLastActionTimestamp = useRef<number>(0);
+
   // =========================================
   // UTILITY FUNCTIONS
   // =========================================
@@ -512,7 +524,208 @@ export default function AustraliaRacingGame() {
   }, []);
 
   // =========================================
-  // AI DECISION ENGINE
+  // AI STRATEGIC INTELLIGENCE SYSTEM
+  // =========================================
+
+  // Detect game phase for strategic adjustment
+  const getGamePhase = useCallback((): 'early' | 'mid' | 'late' | 'endgame' => {
+    const day = gameStateRef.current.day;
+    const timeRemaining = gameStateRef.current.timeRemaining;
+
+    if (day === 1 && timeRemaining > 120) return 'early';
+    if (day <= 2) return 'mid';
+    if (day === 3 || (day === 4 && timeRemaining > 60)) return 'late';
+    return 'endgame';
+  }, []);
+
+  // Calculate score differential for strategy adjustment
+  const getScoreDifferential = useCallback((): number => {
+    const currentRegions = regionsRef.current;
+    const playerRegions = Object.keys(currentRegions).filter(k => currentRegions[k].controller === 'player').length;
+    const aiRegions = Object.keys(currentRegions).filter(k => currentRegions[k].controller === 'ai').length;
+    return aiRegions - playerRegions; // Positive = AI winning, Negative = AI losing
+  }, []);
+
+  // Calculate risk tolerance based on game state
+  const getRiskTolerance = useCallback((): number => {
+    const phase = getGamePhase();
+    const scoreDiff = getScoreDifferential();
+    const budgetRatio = aiStateRef.current.budget / 1000; // Relative to starting budget
+
+    // Base risk tolerance
+    let risk = 0.5;
+
+    // Adjust by phase
+    if (phase === 'early') risk = 0.3; // Conservative early
+    else if (phase === 'mid') risk = 0.5; // Balanced mid
+    else if (phase === 'late') risk = 0.6; // Slightly aggressive late
+    else if (phase === 'endgame') risk = 0.8; // Very aggressive endgame
+
+    // Adjust by score (if losing, take more risks)
+    if (scoreDiff < -2) risk += 0.3; // Far behind - risky
+    else if (scoreDiff < 0) risk += 0.15; // Behind - more risk
+    else if (scoreDiff > 2) risk -= 0.2; // Far ahead - conservative
+    else if (scoreDiff > 0) risk -= 0.1; // Ahead - slightly conservative
+
+    // Adjust by budget (low budget = more risk to recover)
+    if (budgetRatio < 0.5) risk += 0.2;
+    else if (budgetRatio > 2) risk -= 0.15;
+
+    return Math.max(0.1, Math.min(0.95, risk)); // Clamp between 0.1 and 0.95
+  }, [getGamePhase, getScoreDifferential]);
+
+  // Check if challenge was recently done (cooldown)
+  const isChallengeOnCooldown = useCallback((challengeName: string, regionKey: string): boolean => {
+    const lastChallenge = aiLastChallengesByRegion.current[regionKey];
+
+    // Prevent doing the same challenge twice in a row in same region
+    if (lastChallenge === challengeName) return true;
+
+    // Check recent history (last 3 actions)
+    const recentActions = aiActionHistory.current.slice(-3);
+    const recentChallengeCount = recentActions.filter(
+      a => a.type === 'challenge' && a.challengeName === challengeName
+    ).length;
+
+    // Don't spam the same challenge
+    if (recentChallengeCount >= 2) return true;
+
+    return false;
+  }, []);
+
+  // Check action type diversity (prevent spamming same action type)
+  const shouldEnforceDiversity = useCallback((actionType: string): boolean => {
+    const recent = aiConsecutiveActionTypes.current;
+
+    // If last 3 actions were all the same type, force diversity
+    if (recent.length >= 3) {
+      const lastThree = recent.slice(-3);
+      if (lastThree.every(t => t === actionType)) {
+        return true; // Block this action type
+      }
+    }
+
+    // If last 2 actions were same type and it's a challenge, enforce diversity
+    if (recent.length >= 2 && actionType === 'challenge') {
+      const lastTwo = recent.slice(-2);
+      if (lastTwo.every(t => t === 'challenge')) {
+        return true; // Force travel or deposit
+      }
+    }
+
+    return false;
+  }, []);
+
+  // Calculate sophisticated wager with variation
+  const calculateDynamicWager = useCallback((
+    challenge: Challenge,
+    budget: number,
+    phase: 'early' | 'mid' | 'late' | 'endgame'
+  ): number => {
+    const riskTolerance = getRiskTolerance();
+
+    // Base wager on phase and risk
+    let basePercentage = 0.15; // 15% default
+
+    if (phase === 'early') basePercentage = 0.10; // Conservative 10%
+    else if (phase === 'mid') basePercentage = 0.20; // Moderate 20%
+    else if (phase === 'late') basePercentage = 0.25; // Aggressive 25%
+    else if (phase === 'endgame') basePercentage = 0.35; // Very aggressive 35%
+
+    // Adjust by risk tolerance
+    basePercentage *= riskTolerance;
+
+    // Adjust by challenge success rate (bet more on safer challenges)
+    const safetyFactor = challenge.baseSuccessChance;
+    basePercentage *= (0.7 + safetyFactor * 0.6); // Scale between 70-130%
+
+    // Calculate base wager
+    let wager = Math.floor(budget * basePercentage);
+
+    // Add random variation (±20%) to prevent predictability
+    const variation = 0.8 + (Math.random() * 0.4); // 0.8 to 1.2
+    wager = Math.floor(wager * variation);
+
+    // Apply bounds
+    const minWager = Math.min(50, budget * 0.05);
+    const maxWager = Math.min(budget * 0.5, 800); // Never more than 50% or $800
+
+    return Math.max(minWager, Math.min(maxWager, wager));
+  }, [getRiskTolerance]);
+
+  // Record action for history tracking
+  const recordAiAction = useCallback((
+    type: 'challenge' | 'travel' | 'deposit',
+    details: { challengeName?: string; region?: string; wager?: number }
+  ) => {
+    const now = Date.now();
+
+    // Add to history
+    aiActionHistory.current.push({
+      type,
+      timestamp: now,
+      ...details
+    });
+
+    // Keep only last 20 actions
+    if (aiActionHistory.current.length > 20) {
+      aiActionHistory.current = aiActionHistory.current.slice(-20);
+    }
+
+    // Track consecutive action types
+    aiConsecutiveActionTypes.current.push(type);
+    if (aiConsecutiveActionTypes.current.length > 5) {
+      aiConsecutiveActionTypes.current = aiConsecutiveActionTypes.current.slice(-5);
+    }
+
+    // Track last challenge by region
+    if (type === 'challenge' && details.challengeName && details.region) {
+      aiLastChallengesByRegion.current[details.region] = details.challengeName;
+    }
+
+    aiLastActionTimestamp.current = now;
+  }, []);
+
+  // Strategic region targeting
+  const getRegionStrategicValue = useCallback((regionKey: string): number => {
+    const currentRegions = regionsRef.current;
+    const region = currentRegions[regionKey];
+    const phase = getGamePhase();
+
+    let value = 100; // Base value
+
+    // Value based on control status
+    if (region.controller === 'player') {
+      value += 300; // High value to steal from player
+    } else if (region.controller === null) {
+      value += 200; // Good value to claim unclaimed
+    } else if (region.controller === 'ai') {
+      value += 50; // Some value to strengthen
+    }
+
+    // Value based on deposits
+    const depositDifference = region.playerDeposit - region.aiDeposit;
+    if (depositDifference > 0 && depositDifference < 200) {
+      value += 150; // Close race - high priority
+    }
+
+    // Visited bonus available?
+    if (region.welcomeBonusAvailable) {
+      value += 400; // Very high value
+    }
+
+    // Phase adjustments
+    if (phase === 'early' && region.welcomeBonusAvailable) {
+      value += 200; // Prioritize bonuses early
+    } else if (phase === 'endgame' && region.controller === 'player') {
+      value += 250; // Prioritize stealing in endgame
+    }
+
+    return value;
+  }, [getGamePhase]);
+
+  // =========================================
+  // AI DECISION ENGINE (SOPHISTICATED)
   // =========================================
 
   const aiTakeAction = useCallback(async () => {
@@ -530,39 +743,72 @@ export default function AustraliaRacingGame() {
       const currentRegions = regionsRef.current;
       const currentGameState = gameStateRef.current;
 
-      // Evaluate all possible actions
-      const actions: Array<{ type: string; value: number; data: any }> = [];
+      // SOPHISTICATED AI: Get strategic context
+      const gamePhase = getGamePhase();
+      const scoreDifferential = getScoreDifferential();
+      const riskTolerance = getRiskTolerance();
 
-      // 1. Evaluate challenges
+      // Evaluate all possible actions with sophisticated scoring
+      const actions: Array<{
+        type: string;
+        value: number;
+        data: any;
+        diversityPenalty: number;
+      }> = [];
+
+      // 1. SOPHISTICATED CHALLENGE EVALUATION
       const currentRegionChallenges = REGIONS[currentAiState.currentRegion].challenges;
       currentRegionChallenges.forEach(challenge => {
         // CRITICAL FIX #8: Check time before adding action
         if (!hasTimeFor(challenge.duration)) return;
 
-        // CRITICAL FIX #2 & #9: Calculate wager with proper budget constraints
-        const maxWager = Math.floor(currentAiState.budget * 0.3);
-        const optimalWager = Math.min(maxWager, 500);
-        if (optimalWager < 50) return;
+        // SOPHISTICATION: Check cooldown to prevent repetition
+        if (isChallengeOnCooldown(challenge.name, currentAiState.currentRegion)) {
+          return; // Skip challenges on cooldown
+        }
+
+        // SOPHISTICATION: Dynamic wager calculation
+        const dynamicWager = calculateDynamicWager(challenge, currentAiState.budget, gamePhase);
+
+        if (dynamicWager < 50) return; // Skip if wager too small
 
         // CRITICAL FIX #2: Validate affordability
-        if (!canAfford(optimalWager)) return;
+        if (!canAfford(dynamicWager)) return;
 
-        // CRITICAL FIX #9: Improved expected value with risk consideration
-        const expectedReturn = challenge.multiplier * challenge.baseSuccessChance * optimalWager;
-        const expectedLoss = optimalWager * (1 - challenge.baseSuccessChance);
+        // SOPHISTICATION: Multi-factor scoring
+        const expectedReturn = challenge.multiplier * challenge.baseSuccessChance * dynamicWager;
+        const expectedLoss = dynamicWager * (1 - challenge.baseSuccessChance);
         const expectedValue = expectedReturn - expectedLoss;
 
-        // Consider time efficiency
-        const valuePerSecond = expectedValue / challenge.duration;
+        // Time efficiency
+        const timeEfficiency = expectedValue / challenge.duration;
+
+        // Risk-adjusted value (favor safer challenges when conservative)
+        const riskAdjustedValue = timeEfficiency * (0.5 + challenge.baseSuccessChance * 0.5);
+
+        // Phase bonuses
+        let phaseBonus = 1.0;
+        if (gamePhase === 'early' && challenge.baseSuccessChance > 0.6) phaseBonus = 1.3; // Favor safe early
+        if (gamePhase === 'endgame' && challenge.multiplier > 2.5) phaseBonus = 1.4; // Favor high reward late
+
+        // Calculate final value
+        const finalValue = riskAdjustedValue * phaseBonus * 100;
+
+        // Diversity penalty
+        let diversityPenalty = 0;
+        if (shouldEnforceDiversity('challenge')) {
+          diversityPenalty = 500; // Heavy penalty to force other action types
+        }
 
         actions.push({
           type: 'challenge',
-          value: valuePerSecond * 100, // Weight by efficiency
-          data: { challenge, wager: optimalWager },
+          value: finalValue,
+          data: { challenge, wager: dynamicWager },
+          diversityPenalty
         });
       });
 
-      // 2. Evaluate flights
+      // 2. SOPHISTICATED TRAVEL EVALUATION
       const unvisitedRegions = Object.keys(REGIONS).filter(
         r => r !== currentAiState.currentRegion && !currentAiState.visitedRegions.includes(r)
       );
@@ -578,77 +824,133 @@ export default function AustraliaRacingGame() {
         if (!validateBudgetTransaction(cost)) return;
         if (!canAfford(cost)) return;
 
+        // SOPHISTICATION: Strategic region targeting
+        const strategicValue = getRegionStrategicValue(destination);
+
         // CRITICAL FIX #5: Use current regions state for bonus check
         const welcomeBonus = currentRegions[destination].welcomeBonusAvailable ? 750 : 0;
-        const value = welcomeBonus - cost + 200;
+
+        // Multi-factor travel value
+        const netGain = welcomeBonus - cost;
+        const timeValue = netGain / (duration / 10); // Favor quick trips
+
+        // Combined value with strategic importance
+        const travelValue = (timeValue * 0.4) + (strategicValue * 0.6);
+
+        // Phase-based travel priority
+        let travelPhaseBonus = 1.0;
+        if (gamePhase === 'early') travelPhaseBonus = 1.5; // Prioritize travel early to collect bonuses
+        if (gamePhase === 'endgame' && welcomeBonus === 0) travelPhaseBonus = 0.3; // Deprioritize late travel without bonus
+
+        const finalTravelValue = travelValue * travelPhaseBonus;
+
+        // Diversity penalty
+        let diversityPenalty = 0;
+        if (shouldEnforceDiversity('travel')) {
+          diversityPenalty = 500;
+        }
 
         actions.push({
           type: 'travel',
-          value,
+          value: finalTravelValue,
           data: { destination, cost, duration },
+          diversityPenalty
         });
       });
 
-      // 3. Evaluate deposits
+      // 3. SOPHISTICATED DEPOSIT EVALUATION
       const currentRegion = currentRegions[currentAiState.currentRegion];
       if (!currentRegion) return; // CRITICAL FIX #4: Validate region exists
 
       const aiDeposit = currentRegion.aiDeposit;
       const playerDeposit = currentRegion.playerDeposit;
 
-      // Try to steal player regions
+      // Diversity penalty for deposits
+      let depositDiversityPenalty = 0;
+      if (shouldEnforceDiversity('deposit')) {
+        depositDiversityPenalty = 500;
+      }
+
+      // SOPHISTICATION: Try to steal player regions
       if (currentRegion.controller === 'player') {
-        // CRITICAL FIX #10: Proper deposit calculation within budget
         const amountToSteal = playerDeposit - aiDeposit + 1;
-        const maxAffordable = Math.floor(currentAiState.budget * 0.4);
+        const maxAffordable = Math.floor(currentAiState.budget * (0.3 + riskTolerance * 0.3)); // Adjust by risk
         const actualAmount = Math.min(amountToSteal + 50, maxAffordable);
 
         if (actualAmount > 0 && canAfford(actualAmount)) {
+          // Higher value in endgame, lower in early game
+          let stealValue = 400;
+          if (gamePhase === 'endgame') stealValue = 700;
+          if (gamePhase === 'early') stealValue = 250;
+
+          // Boost if close race
+          if (Math.abs(scoreDifferential) <= 1) stealValue += 200;
+
           actions.push({
             type: 'deposit',
-            value: 600, // High value to steal
+            value: stealValue,
             data: { amount: actualAmount },
+            diversityPenalty: depositDiversityPenalty
           });
         }
       }
 
-      // Secure uncontrolled regions
+      // SOPHISTICATION: Secure uncontrolled regions
       if (currentRegion.controller === null) {
-        // CRITICAL FIX #10: Ensure amount doesn't exceed budget
-        const maxAffordable = Math.floor(currentAiState.budget * 0.2);
-        const actualAmount = Math.min(200, maxAffordable);
+        const maxAffordable = Math.floor(currentAiState.budget * 0.25);
+        const baseAmount = Math.min(150, maxAffordable);
+
+        // Vary amount based on phase
+        let actualAmount = baseAmount;
+        if (gamePhase === 'early') actualAmount = Math.floor(baseAmount * 1.2); // More aggressive early
+        if (gamePhase === 'endgame') actualAmount = Math.floor(baseAmount * 0.8); // Less in endgame
 
         if (actualAmount > 0 && canAfford(actualAmount)) {
+          // Value based on strategic importance
+          const regionValue = getRegionStrategicValue(currentAiState.currentRegion);
+          const depositValue = Math.min(regionValue * 0.5, 500);
+
           actions.push({
             type: 'deposit',
-            value: 300,
+            value: depositValue,
             data: { amount: actualAmount },
+            diversityPenalty: depositDiversityPenalty
           });
         }
       }
 
-      // Defend regions
+      // SOPHISTICATION: Defend regions
       if (currentRegion.controller === 'ai' &&
           playerState.currentRegion === currentAiState.currentRegion &&
           playerState.budget > aiDeposit) {
-        // CRITICAL FIX #10: Proper calculation
-        const defenseAmount = Math.floor(aiDeposit * 0.5);
-        const maxAffordable = Math.floor(currentAiState.budget * 0.3);
+        const defenseAmount = Math.floor(aiDeposit * 0.4);
+        const maxAffordable = Math.floor(currentAiState.budget * 0.35);
         const actualAmount = Math.min(defenseAmount, maxAffordable);
 
         if (actualAmount > 0 && canAfford(actualAmount)) {
+          // High value for defense
+          let defenseValue = 550;
+          if (gamePhase === 'endgame') defenseValue = 800; // Critical defense in endgame
+          if (scoreDifferential > 2) defenseValue = 350; // Lower priority if winning comfortably
+
           actions.push({
             type: 'deposit',
-            value: 500,
+            value: defenseValue,
             data: { amount: actualAmount },
+            diversityPenalty: depositDiversityPenalty
           });
         }
       }
 
-      // Pick best action
+      // SOPHISTICATION: Pick best action with diversity enforcement
       if (actions.length === 0) return;
 
-      // CRITICAL FIX #3: Sort and verify best action is affordable
+      // Apply diversity penalties to values
+      actions.forEach(action => {
+        action.value -= action.diversityPenalty;
+      });
+
+      // Sort by adjusted value
       actions.sort((a, b) => b.value - a.value);
 
       // Find first affordable action
@@ -683,6 +985,13 @@ export default function AustraliaRacingGame() {
           addLog(`🤖 AI skipped challenge - insufficient time`, 'info', 'ai');
           return;
         }
+
+        // SOPHISTICATION: Record action
+        recordAiAction('challenge', {
+          challengeName: challenge.name,
+          region: currentAiState.currentRegion,
+          wager
+        });
 
         setAiState(prev => ({
           ...prev,
@@ -734,6 +1043,11 @@ export default function AustraliaRacingGame() {
           addLog(`🤖 AI skipped travel - insufficient time`, 'info', 'ai');
           return;
         }
+
+        // SOPHISTICATION: Record action
+        recordAiAction('travel', {
+          region: destination
+        });
 
         setAiState(prev => ({
           ...prev,
@@ -817,6 +1131,11 @@ export default function AustraliaRacingGame() {
           return;
         }
 
+        // SOPHISTICATION: Record action
+        recordAiAction('deposit', {
+          region
+        });
+
         const newAiDeposit = currentRegionState.aiDeposit + amount;
         const playerDeposit = currentRegionState.playerDeposit;
 
@@ -863,7 +1182,22 @@ export default function AustraliaRacingGame() {
       // CRITICAL FIX #7: Always release lock
       aiActionLockRef.current = false;
     }
-  }, [playerState, addLog, canAfford, hasTimeFor, validateBudgetTransaction, revalidateRegionState]);
+  }, [
+    playerState,
+    addLog,
+    canAfford,
+    hasTimeFor,
+    validateBudgetTransaction,
+    revalidateRegionState,
+    getGamePhase,
+    getScoreDifferential,
+    getRiskTolerance,
+    isChallengeOnCooldown,
+    shouldEnforceDiversity,
+    calculateDynamicWager,
+    recordAiAction,
+    getRegionStrategicValue
+  ]);
 
   // =========================================
   // AI CONTINUOUS LOOP
