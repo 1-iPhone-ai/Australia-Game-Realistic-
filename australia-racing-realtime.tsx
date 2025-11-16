@@ -225,8 +225,6 @@ export default function AustraliaRacingGame() {
 
   const [activityLog, setActivityLog] = useState<ActivityLog[]>([
     { timestamp: Date.now(), message: "🎮 Game started! Race to control Australia!", type: 'info', player: 'player' },
-    { timestamp: Date.now() + 1, message: "💰 Starting budget: $1,000", type: 'info', player: 'player' },
-    { timestamp: Date.now() + 2, message: "🏁 Day 1 begins - Good luck!", type: 'success', player: 'player' },
   ]);
 
   const [selectedChallenge, setSelectedChallenge] = useState<Challenge | null>(null);
@@ -274,6 +272,12 @@ export default function AustraliaRacingGame() {
     gameStateRef.current = gameState;
   }, [gameState]);
 
+  // Add initial Day 1 message on mount
+  useEffect(() => {
+    addLog(`🏁 Day 1 begins - Good luck!`, 'success', 'player');
+    addLog(`💰 Starting budget: $1,000 each`, 'info', 'player');
+  }, []); // Empty deps - runs once on mount
+
   useEffect(() => {
     aiStateRef.current = aiState;
   }, [aiState]);
@@ -307,9 +311,13 @@ export default function AustraliaRacingGame() {
 
             return { ...prev, gameStatus: 'ended', winner, timeRemaining: 0 };
           } else {
-            // Advance day
-            addLog(`📅 Day ${prev.day + 1} begins!`, 'info', 'player');
-            return { ...prev, day: prev.day + 1, timeRemaining: 180 }; // Reset timer
+            // Advance day - Clear activity log and add new day message
+            const newDay = prev.day + 1;
+            setActivityLog([
+              { timestamp: Date.now(), message: `🏁 Day ${newDay} begins!`, type: 'success', player: 'player' },
+              { timestamp: Date.now() + 1, message: `💰 Your budget: $${playerState.budget} | AI budget: $${aiState.budget}`, type: 'info', player: 'player' },
+            ]);
+            return { ...prev, day: newDay, timeRemaining: 180 }; // Reset timer
           }
         }
         return { ...prev, timeRemaining: prev.timeRemaining - 1 };
@@ -539,9 +547,9 @@ export default function AustraliaRacingGame() {
         // CRITICAL FIX #8: Check time before adding action
         if (!hasTimeFor(challenge.duration)) return;
 
-        // CRITICAL FIX #2 & #9: Calculate wager with proper budget constraints
-        const maxWager = Math.floor(currentAiState.budget * 0.3);
-        const optimalWager = Math.min(maxWager, 500);
+        // BALANCE FIX: Reduced AI wager from 30% to 15% and cap at $300 (down from $500)
+        const maxWager = Math.floor(currentAiState.budget * 0.15);
+        const optimalWager = Math.min(maxWager, 300);
         if (optimalWager < 50) return;
 
         // CRITICAL FIX #2: Validate affordability
@@ -555,9 +563,12 @@ export default function AustraliaRacingGame() {
         // Consider time efficiency
         const valuePerSecond = expectedValue / challenge.duration;
 
+        // VARIETY FIX: Add randomness to prevent AI from always picking the same challenge
+        const randomFactor = 0.7 + (Math.random() * 0.6); // Random multiplier between 0.7 and 1.3
+
         actions.push({
           type: 'challenge',
-          value: valuePerSecond * 100, // Weight by efficiency
+          value: valuePerSecond * 100 * randomFactor, // Add randomness for variety
           data: { challenge, wager: optimalWager },
         });
       });
@@ -580,7 +591,8 @@ export default function AustraliaRacingGame() {
 
         // CRITICAL FIX #5: Use current regions state for bonus check
         const welcomeBonus = currentRegions[destination].welcomeBonusAvailable ? 750 : 0;
-        const value = welcomeBonus - cost + 200;
+        // VARIETY FIX: Increase travel value to encourage AI to move around more
+        const value = welcomeBonus - cost + 400; // Increased from 200 to 400
 
         actions.push({
           type: 'travel',
