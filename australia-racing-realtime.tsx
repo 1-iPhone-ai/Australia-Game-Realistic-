@@ -234,6 +234,8 @@ export default function AustraliaRacingGame() {
   const [showTravelModal, setShowTravelModal] = useState(false);
   const [showDepositModal, setShowDepositModal] = useState(false);
   const [showGameOverModal, setShowGameOverModal] = useState(false);
+  const [wagerAmount, setWagerAmount] = useState<number>(100);
+  const [depositAmount, setDepositAmount] = useState<number>(100);
 
   const aiIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const gameStartTime = useRef<number>(Date.now());
@@ -242,6 +244,11 @@ export default function AustraliaRacingGame() {
   const aiStateRef = useRef(aiState);
   const regionsRef = useRef(regions);
   const gameStateRef = useRef(gameState);
+
+  // PLAYER REFS - FIX #1: Add player state tracking refs
+  const playerStateRef = useRef(playerState);
+  const playerActionLockRef = useRef<boolean>(false);
+  const travelProgressRef = useRef<NodeJS.Timeout | null>(null);
 
   // =========================================
   // UTILITY FUNCTIONS
@@ -281,6 +288,82 @@ export default function AustraliaRacingGame() {
   useEffect(() => {
     regionsRef.current = regions;
   }, [regions]);
+
+  // FIX #1: Sync player state ref
+  useEffect(() => {
+    playerStateRef.current = playerState;
+  }, [playerState]);
+
+  // FIX #8: Auto-close modals when game ends
+  useEffect(() => {
+    if (gameState.gameStatus === 'ended') {
+      setShowChallengeModal(false);
+      setShowTravelModal(false);
+      setShowDepositModal(false);
+      setSelectedChallenge(null);
+    }
+  }, [gameState.gameStatus]);
+
+  // FIX #12: Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      // Clean up travel progress interval
+      if (travelProgressRef.current) {
+        clearInterval(travelProgressRef.current);
+      }
+      // Reset locks
+      playerActionLockRef.current = false;
+    };
+  }, []);
+
+  // =========================================
+  // PLAYER VALIDATION HELPERS
+  // =========================================
+
+  // FIX #2: Time validation for player actions
+  const playerHasTimeFor = useCallback((duration: number): boolean => {
+    const timeLeft = gameStateRef.current.timeRemaining;
+    const buffer = 5; // 5 second safety buffer
+    return timeLeft >= (duration + buffer);
+  }, []);
+
+  // FIX #9: Input validation and sanitization
+  const validateAndParseAmount = useCallback((value: number, max: number, min: number = 1): number | null => {
+    if (isNaN(value)) return null;
+    if (!Number.isFinite(value)) return null;
+    if (value < min) return null;
+    if (value > max) return null;
+    return Math.floor(value); // Ensure integer
+  }, []);
+
+  // FIX #7: Region validation
+  const validateRegion = useCallback((regionKey: string): boolean => {
+    if (!REGIONS[regionKey]) {
+      console.error(`Invalid region: ${regionKey}`);
+      return false;
+    }
+    if (!regionsRef.current[regionKey]) {
+      console.error(`Region state missing for: ${regionKey}`);
+      return false;
+    }
+    return true;
+  }, []);
+
+  // FIX #10: Get suggested wager amount
+  const getSuggestedWager = useCallback((budget: number, challenge: Challenge): number => {
+    const conservative = Math.floor(budget * 0.15);
+    return Math.min(conservative, 500, budget);
+  }, []);
+
+  // FIX #13: Comprehensive action availability check
+  const canPlayerAct = useCallback((): boolean => {
+    return (
+      gameStatusRef.current === 'active' &&
+      !playerStateRef.current.isBusy &&
+      !playerStateRef.current.isTraveling &&
+      gameStateRef.current.timeRemaining > 10
+    );
+  }, []);
 
   // =========================================
   // DAY TIMER (AUTO-ADVANCE)
@@ -324,53 +407,115 @@ export default function AustraliaRacingGame() {
   // =========================================
 
   const handlePlayerChallenge = async (challenge: Challenge, wager: number) => {
+    // FIX #1 & #6: Check action lock to prevent concurrent actions
+    if (playerActionLockRef.current) {
+      alert("You have an action in progress!");
+      return;
+    }
+
     if (playerState.isBusy || playerState.isTraveling) {
       alert("You're currently busy!");
       return;
     }
 
-    if (wager > playerState.budget) {
+    // FIX #2: Validate time availability
+    if (!playerHasTimeFor(challenge.duration)) {
+      alert(`Not enough time! Need ${challenge.duration}s but only ${gameState.timeRemaining}s left.`);
+      return;
+    }
+
+    // FIX #9: Validate wager amount
+    const validatedWager = validateAndParseAmount(wager, playerState.budget);
+    if (validatedWager === null) {
+      alert(`Invalid wager amount! Must be between $1 and $${playerState.budget}`);
+      return;
+    }
+
+    if (validatedWager > playerState.budget) {
       alert("Insufficient budget!");
       return;
     }
 
-    setPlayerState(prev => ({
-      ...prev,
-      isBusy: true,
-      currentActivity: `Attempting ${challenge.name}...`,
-    }));
+    // FIX #6: Set action lock
+    playerActionLockRef.current = true;
 
-    addLog(`🎯 Started "${challenge.name}" (wagered $${wager})`, 'info', 'player');
-    setShowChallengeModal(false);
-
-    // Simulate challenge duration
-    await delay(challenge.duration * 1000);
-
-    const success = Math.random() < challenge.baseSuccessChance;
-
-    if (success) {
-      const winnings = Math.floor(wager * challenge.multiplier);
+    try {
       setPlayerState(prev => ({
         ...prev,
-        budget: prev.budget + winnings,
+        isBusy: true,
+        currentActivity: `Attempting ${challenge.name}...`,
+      }));
+
+      addLog(`🎯 Started "${challenge.name}" (wagered $${validatedWager})`, 'info', 'player');
+      setShowChallengeModal(false);
+
+      // Simulate challenge duration
+      await delay(challenge.duration * 1000);
+
+      // FIX #1: Validate game still active after delay
+      if (gameStatusRef.current !== 'active') {
+        setPlayerState(prev => ({ ...prev, isBusy: false, currentActivity: null }));
+        return;
+      }
+
+      const success = Math.random() < challenge.baseSuccessChance;
+
+      if (success) {
+        const winnings = Math.floor(validatedWager * challenge.multiplier);
+        setPlayerState(prev => ({
+          ...prev,
+          budget: Math.max(0, prev.budget + winnings), // FIX #6 & #15: Prevent negative budget
+          isBusy: false,
+          currentActivity: null,
+        }));
+        addLog(`✅ Completed "${challenge.name}"! Won $${winnings} (profit: $${winnings - validatedWager})`, 'success', 'player');
+      } else {
+        setPlayerState(prev => ({
+          ...prev,
+          budget: Math.max(0, prev.budget - validatedWager), // FIX #6 & #15: Prevent negative budget
+          isBusy: false,
+          currentActivity: null,
+        }));
+        addLog(`❌ Failed "${challenge.name}". Lost $${validatedWager}`, 'error', 'player');
+      }
+    } catch (error) {
+      // FIX #10: Error boundary
+      console.error('Player challenge error:', error);
+      addLog(`❌ Challenge failed due to error. Please try again.`, 'error', 'player');
+
+      // Recover state
+      setPlayerState(prev => ({
+        ...prev,
         isBusy: false,
         currentActivity: null,
       }));
-      addLog(`✅ Completed "${challenge.name}"! Won $${winnings} (profit: $${winnings - wager})`, 'success', 'player');
-    } else {
-      setPlayerState(prev => ({
-        ...prev,
-        budget: prev.budget - wager,
-        isBusy: false,
-        currentActivity: null,
-      }));
-      addLog(`❌ Failed "${challenge.name}". Lost $${wager}`, 'error', 'player');
+    } finally {
+      // FIX #6: Always release lock
+      playerActionLockRef.current = false;
     }
   };
 
   const handlePlayerTravel = async (destination: string, cost: number, duration: number) => {
+    // FIX #1: Check action lock
+    if (playerActionLockRef.current) {
+      alert("You have an action in progress!");
+      return;
+    }
+
     if (playerState.isBusy || playerState.isTraveling) {
       alert("You're currently busy!");
+      return;
+    }
+
+    // FIX #7: Validate destination region
+    if (!validateRegion(destination)) {
+      alert("Invalid destination!");
+      return;
+    }
+
+    // FIX #2: Validate time availability
+    if (!playerHasTimeFor(duration)) {
+      alert(`Not enough time! Need ${duration}s but only ${gameState.timeRemaining}s left.`);
       return;
     }
 
@@ -379,108 +524,207 @@ export default function AustraliaRacingGame() {
       return;
     }
 
-    setPlayerState(prev => ({
-      ...prev,
-      budget: prev.budget - cost,
-      isTraveling: true,
-      travelDestination: destination,
-      travelProgress: 0,
-    }));
+    // FIX #1: Set action lock
+    playerActionLockRef.current = true;
 
-    addLog(`✈️ Flying to ${REGIONS[destination].name}... (${duration}s)`, 'info', 'player');
-    setShowTravelModal(false);
-
-    // Animate travel progress
-    const startTime = Date.now();
-    const endTime = startTime + (duration * 1000);
-
-    const progressInterval = setInterval(() => {
-      const now = Date.now();
-      const progress = Math.min(100, ((now - startTime) / (duration * 1000)) * 100);
-      setPlayerState(prev => ({ ...prev, travelProgress: progress }));
-
-      if (now >= endTime) {
-        clearInterval(progressInterval);
+    try {
+      // FIX #3: Clear any existing progress interval
+      if (travelProgressRef.current) {
+        clearInterval(travelProgressRef.current);
+        travelProgressRef.current = null;
       }
-    }, 100);
 
-    // Wait for travel to complete
-    await delay(duration * 1000);
+      setPlayerState(prev => ({
+        ...prev,
+        budget: prev.budget - cost,
+        isTraveling: true,
+        travelDestination: destination,
+        travelProgress: 0,
+      }));
 
-    // Check for welcome bonus
-    const bonusAwarded = regions[destination].welcomeBonusAvailable;
-    let bonusAmount = 0;
+      addLog(`✈️ Flying to ${REGIONS[destination].name}... (${duration}s)`, 'info', 'player');
+      setShowTravelModal(false);
 
-    if (bonusAwarded) {
-      bonusAmount = 750;
+      // Animate travel progress
+      const startTime = Date.now();
+      const endTime = startTime + (duration * 1000);
+
+      const progressInterval = setInterval(() => {
+        // FIX #3: Check game status in interval
+        if (gameStatusRef.current !== 'active') {
+          clearInterval(progressInterval);
+          return;
+        }
+
+        const now = Date.now();
+        const progress = Math.min(100, ((now - startTime) / (duration * 1000)) * 100);
+        setPlayerState(prev => ({ ...prev, travelProgress: progress }));
+
+        if (now >= endTime) {
+          clearInterval(progressInterval);
+        }
+      }, 100);
+
+      // FIX #3: Store interval ref for cleanup
+      travelProgressRef.current = progressInterval;
+
+      // Wait for travel to complete
+      await delay(duration * 1000);
+
+      // FIX #1 & #3: Validate game still active after delay
+      if (gameStatusRef.current !== 'active') {
+        clearInterval(progressInterval);
+        travelProgressRef.current = null;
+        setPlayerState(prev => ({
+          ...prev,
+          isTraveling: false,
+          travelDestination: null,
+          travelProgress: 0,
+        }));
+        return;
+      }
+
+      // FIX #4: Revalidate bonus availability after delay
+      const currentRegionState = regionsRef.current[destination];
+      if (!currentRegionState) {
+        console.error(`Region state missing after travel: ${destination}`);
+        clearInterval(progressInterval);
+        travelProgressRef.current = null;
+        setPlayerState(prev => ({
+          ...prev,
+          isTraveling: false,
+          travelDestination: null,
+          travelProgress: 0,
+        }));
+        return;
+      }
+
+      const bonusAwarded = currentRegionState.welcomeBonusAvailable;
+      let bonusAmount = 0;
+
+      if (bonusAwarded) {
+        bonusAmount = 750;
+        setRegions(prev => ({
+          ...prev,
+          [destination]: { ...prev[destination], welcomeBonusAvailable: false },
+        }));
+        addLog(`✅ Claimed welcome bonus! +$${bonusAmount}`, 'success', 'player');
+      }
+
+      setPlayerState(prev => ({
+        ...prev,
+        currentRegion: destination,
+        isTraveling: false,
+        travelDestination: null,
+        travelProgress: 0,
+        budget: Math.max(0, prev.budget + bonusAmount), // FIX #15: Prevent negative budget
+        visitedRegions: prev.visitedRegions.includes(destination)
+          ? prev.visitedRegions
+          : [...prev.visitedRegions, destination],
+      }));
+
       setRegions(prev => ({
         ...prev,
-        [destination]: { ...prev[destination], welcomeBonusAvailable: false },
+        [destination]: { ...prev[destination], playerVisited: true },
       }));
-      addLog(`✅ Claimed welcome bonus! +$${bonusAmount}`, 'success', 'player');
+
+      addLog(`📍 Arrived in ${REGIONS[destination].name}${bonusAwarded ? ' (bonus claimed!)' : ''}`, 'success', 'player');
+
+      // FIX #3: Clean up interval ref
+      clearInterval(progressInterval);
+      travelProgressRef.current = null;
+    } catch (error) {
+      // FIX #10: Error boundary
+      console.error('Player travel error:', error);
+      addLog(`❌ Travel failed due to error. Cost refunded.`, 'error', 'player');
+
+      // Refund cost and recover state
+      setPlayerState(prev => ({
+        ...prev,
+        budget: Math.max(0, prev.budget + cost),
+        isTraveling: false,
+        travelDestination: null,
+        travelProgress: 0,
+      }));
+
+      // Clean up interval
+      if (travelProgressRef.current) {
+        clearInterval(travelProgressRef.current);
+        travelProgressRef.current = null;
+      }
+    } finally {
+      // FIX #1: Always release lock
+      playerActionLockRef.current = false;
     }
-
-    setPlayerState(prev => ({
-      ...prev,
-      currentRegion: destination,
-      isTraveling: false,
-      travelDestination: null,
-      travelProgress: 0,
-      budget: prev.budget + bonusAmount,
-      visitedRegions: prev.visitedRegions.includes(destination)
-        ? prev.visitedRegions
-        : [...prev.visitedRegions, destination],
-    }));
-
-    setRegions(prev => ({
-      ...prev,
-      [destination]: { ...prev[destination], playerVisited: true },
-    }));
-
-    addLog(`📍 Arrived in ${REGIONS[destination].name}${bonusAwarded ? ' (bonus claimed!)' : ''}`, 'success', 'player');
   };
 
   const handlePlayerDeposit = (amount: number) => {
-    if (amount > playerState.budget) {
-      alert("Insufficient budget!");
-      return;
+    try {
+      // FIX #9: Validate amount
+      const validatedAmount = validateAndParseAmount(amount, playerState.budget);
+      if (validatedAmount === null) {
+        alert(`Invalid deposit amount! Must be between $1 and $${playerState.budget}`);
+        return;
+      }
+
+      if (validatedAmount > playerState.budget) {
+        alert("Insufficient budget!");
+        return;
+      }
+
+      if (validatedAmount <= 0) {
+        alert("Please enter a valid amount!");
+        return;
+      }
+
+      const region = playerState.currentRegion;
+
+      // FIX #7: Validate current region
+      if (!validateRegion(region)) {
+        alert("Error: Invalid current location!");
+        return;
+      }
+
+      const currentRegionState = regions[region];
+      const newPlayerDeposit = currentRegionState.playerDeposit + validatedAmount;
+      const aiDeposit = currentRegionState.aiDeposit;
+
+      setPlayerState(prev => ({
+        ...prev,
+        budget: Math.max(0, prev.budget - validatedAmount), // FIX #15: Prevent negative budget
+      }));
+
+      const wasControlled = currentRegionState.controller;
+      const newController = newPlayerDeposit > aiDeposit ? 'player' : (aiDeposit > newPlayerDeposit ? 'ai' : null);
+
+      setRegions(prev => ({
+        ...prev,
+        [region]: {
+          ...prev[region],
+          playerDeposit: newPlayerDeposit,
+          controller: newController,
+        },
+      }));
+
+      // FIX #11: Better logging for all controller change scenarios
+      if (wasControlled !== newController && newController === 'player') {
+        addLog(`🏆 You now control ${REGIONS[region].name}! ($${newPlayerDeposit} deposited)`, 'success', 'player');
+      } else if (wasControlled === 'player' && newController === 'ai') {
+        addLog(`⚠️ Lost control of ${REGIONS[region].name} (AI: $${aiDeposit}, You: $${newPlayerDeposit})`, 'warning', 'player');
+      } else if (wasControlled === 'player' && newController === null) {
+        addLog(`⚠️ ${REGIONS[region].name} now tied! Deposit more to regain control.`, 'warning', 'player');
+      } else if (wasControlled !== newController && newController === 'ai') {
+        addLog(`💰 Deposited $${validatedAmount} in ${REGIONS[region].name} (total: $${newPlayerDeposit}, AI controls)`, 'info', 'player');
+      } else {
+        addLog(`💰 Deposited $${validatedAmount} in ${REGIONS[region].name} (total: $${newPlayerDeposit})`, 'info', 'player');
+      }
+
+      setShowDepositModal(false);
+    } catch (error) {
+      // FIX #10: Error boundary
+      console.error('Player deposit error:', error);
+      addLog(`❌ Deposit failed due to error. Please try again.`, 'error', 'player');
     }
-
-    if (amount <= 0) {
-      alert("Please enter a valid amount!");
-      return;
-    }
-
-    const region = playerState.currentRegion;
-    const newPlayerDeposit = regions[region].playerDeposit + amount;
-    const aiDeposit = regions[region].aiDeposit;
-
-    setPlayerState(prev => ({
-      ...prev,
-      budget: prev.budget - amount,
-    }));
-
-    const wasControlled = regions[region].controller;
-    const newController = newPlayerDeposit > aiDeposit ? 'player' : (aiDeposit > newPlayerDeposit ? 'ai' : null);
-
-    setRegions(prev => ({
-      ...prev,
-      [region]: {
-        ...prev[region],
-        playerDeposit: newPlayerDeposit,
-        controller: newController,
-      },
-    }));
-
-    if (wasControlled !== newController && newController === 'player') {
-      addLog(`🏆 You now control ${REGIONS[region].name}! ($${newPlayerDeposit} deposited)`, 'success', 'player');
-    } else if (wasControlled !== newController && newController === 'ai') {
-      addLog(`💰 Deposited $${amount} in ${REGIONS[region].name} (total: $${newPlayerDeposit})`, 'info', 'player');
-    } else {
-      addLog(`💰 Deposited $${amount} in ${REGIONS[region].name} (total: $${newPlayerDeposit})`, 'info', 'player');
-    }
-
-    setShowDepositModal(false);
   };
 
   // =========================================
@@ -973,7 +1217,7 @@ export default function AustraliaRacingGame() {
               <div className="space-y-2">
                 <div className="flex justify-between items-center">
                   <span className="text-gray-600">Budget:</span>
-                  <span className="text-xl font-bold text-green-600">${playerState.budget}</span>
+                  <span className="text-xl font-bold text-green-600">${Math.max(0, playerState.budget)}</span>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-gray-600">Location:</span>
@@ -1009,27 +1253,73 @@ export default function AustraliaRacingGame() {
               {/* Action Buttons */}
               <div className="mt-4 space-y-2">
                 <button
-                  onClick={() => setShowChallengeModal(true)}
-                  disabled={playerState.isBusy || playerState.isTraveling}
-                  className="w-full bg-purple-500 hover:bg-purple-600 disabled:bg-gray-300 text-white px-4 py-2 rounded font-semibold transition-colors"
+                  onClick={() => {
+                    setShowChallengeModal(true);
+                    setWagerAmount(Math.min(100, playerState.budget));
+                  }}
+                  disabled={!canPlayerAct()}
+                  className="w-full bg-purple-500 hover:bg-purple-600 disabled:bg-gray-300 disabled:cursor-not-allowed text-white px-4 py-2 rounded font-semibold transition-colors"
+                  title={
+                    gameState.gameStatus !== 'active' ? 'Game ended' :
+                    playerState.isBusy ? 'Currently busy with challenge' :
+                    playerState.isTraveling ? 'Currently traveling' :
+                    gameState.timeRemaining <= 10 ? 'Not enough time left in day' :
+                    'Start a challenge'
+                  }
                 >
                   🎯 Do Challenge
                 </button>
                 <button
                   onClick={() => setShowTravelModal(true)}
-                  disabled={playerState.isBusy || playerState.isTraveling}
-                  className="w-full bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 text-white px-4 py-2 rounded font-semibold transition-colors"
+                  disabled={!canPlayerAct()}
+                  className="w-full bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed text-white px-4 py-2 rounded font-semibold transition-colors"
+                  title={
+                    gameState.gameStatus !== 'active' ? 'Game ended' :
+                    playerState.isBusy ? 'Currently busy with challenge' :
+                    playerState.isTraveling ? 'Currently traveling' :
+                    gameState.timeRemaining <= 10 ? 'Not enough time left in day' :
+                    'Book a flight'
+                  }
                 >
                   ✈️ Travel
                 </button>
                 <button
-                  onClick={() => setShowDepositModal(true)}
-                  disabled={playerState.isBusy || playerState.isTraveling}
-                  className="w-full bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white px-4 py-2 rounded font-semibold transition-colors"
+                  onClick={() => {
+                    setShowDepositModal(true);
+                    setDepositAmount(Math.min(100, playerState.budget));
+                  }}
+                  disabled={!canPlayerAct()}
+                  className="w-full bg-green-500 hover:bg-green-600 disabled:bg-gray-300 disabled:cursor-not-allowed text-white px-4 py-2 rounded font-semibold transition-colors"
+                  title={
+                    gameState.gameStatus !== 'active' ? 'Game ended' :
+                    playerState.isBusy ? 'Currently busy with challenge' :
+                    playerState.isTraveling ? 'Currently traveling' :
+                    gameState.timeRemaining <= 10 ? 'Not enough time left in day' :
+                    'Deposit money to control region'
+                  }
                 >
                   💰 Deposit Money
                 </button>
               </div>
+
+              {/* FIX #16: Visual feedback for disabled actions */}
+              {playerState.isBusy && (
+                <div className="mt-3 text-xs text-yellow-700 bg-yellow-50 p-2 rounded border border-yellow-200">
+                  ⏳ {playerState.currentActivity}
+                </div>
+              )}
+
+              {playerState.isTraveling && (
+                <div className="mt-3 text-xs text-blue-700 bg-blue-50 p-2 rounded border border-blue-200">
+                  ✈️ Traveling to {REGIONS[playerState.travelDestination!].name}
+                </div>
+              )}
+
+              {gameState.timeRemaining < 10 && gameState.gameStatus === 'active' && !playerState.isBusy && !playerState.isTraveling && (
+                <div className="mt-3 text-xs text-red-700 bg-red-50 p-2 rounded border border-red-200">
+                  ⏰ Less than 10 seconds left - wait for next day
+                </div>
+              )}
             </div>
 
             {/* AI Panel */}
@@ -1223,7 +1513,7 @@ export default function AustraliaRacingGame() {
         </div>
       </div>
 
-      {/* Challenge Modal */}
+      {/* Challenge Modal - FIX #5: Use controlled components */}
       {showChallengeModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
@@ -1233,7 +1523,11 @@ export default function AustraliaRacingGame() {
                 <div
                   key={idx}
                   className="border border-gray-300 rounded-lg p-3 hover:border-purple-500 cursor-pointer transition-colors"
-                  onClick={() => setSelectedChallenge(challenge)}
+                  onClick={() => {
+                    setSelectedChallenge(challenge);
+                    // FIX #10: Set suggested wager when challenge selected
+                    setWagerAmount(getSuggestedWager(playerState.budget, challenge));
+                  }}
                 >
                   <div className="font-semibold text-gray-800">{challenge.name}</div>
                   <div className="text-sm text-gray-600 mt-1">
@@ -1246,18 +1540,29 @@ export default function AustraliaRacingGame() {
                       <label className="block text-sm font-semibold text-gray-700 mb-1">Wager Amount:</label>
                       <input
                         type="number"
-                        id="wager-input"
                         min="1"
                         max={playerState.budget}
-                        defaultValue={Math.min(100, playerState.budget)}
+                        value={wagerAmount}
+                        onChange={(e) => {
+                          const value = parseInt(e.target.value) || 0;
+                          setWagerAmount(Math.max(0, Math.min(value, playerState.budget)));
+                        }}
+                        onClick={(e) => e.stopPropagation()}
                         className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
                       />
+                      <div className="text-xs text-gray-500 mt-1">
+                        Suggested: ${getSuggestedWager(playerState.budget, challenge)} (15% of budget)
+                        {wagerAmount > playerState.budget * 0.5 && (
+                          <span className="text-red-600 font-bold ml-2">
+                            ⚠️ High risk! Over 50% of budget
+                          </span>
+                        )}
+                      </div>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          const wager = parseInt((document.getElementById('wager-input') as HTMLInputElement).value);
-                          if (wager > 0 && wager <= playerState.budget) {
-                            handlePlayerChallenge(challenge, wager);
+                          if (wagerAmount > 0 && wagerAmount <= playerState.budget) {
+                            handlePlayerChallenge(challenge, wagerAmount);
                           } else {
                             alert('Invalid wager amount!');
                           }
@@ -1331,7 +1636,7 @@ export default function AustraliaRacingGame() {
         </div>
       )}
 
-      {/* Deposit Modal */}
+      {/* Deposit Modal - FIX #5: Use controlled components */}
       {showDepositModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
@@ -1367,6 +1672,12 @@ export default function AustraliaRacingGame() {
                     ${Math.max(regions[playerState.currentRegion].aiDeposit - regions[playerState.currentRegion].playerDeposit + 1, 1)}
                   </span>
                 </div>
+                {/* FIX #17: Warning about AI potentially depositing */}
+                {aiState.currentRegion === playerState.currentRegion && (
+                  <div className="text-xs text-yellow-700 bg-yellow-50 p-2 rounded border border-yellow-200 mt-2">
+                    ⚠️ AI is in same region - amounts may change!
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1374,24 +1685,29 @@ export default function AustraliaRacingGame() {
               <label className="block text-sm font-semibold text-gray-700 mb-2">Deposit Amount:</label>
               <input
                 type="number"
-                id="deposit-input"
                 min="1"
                 max={playerState.budget}
-                defaultValue={Math.min(100, playerState.budget)}
+                value={depositAmount}
+                onChange={(e) => {
+                  const value = parseInt(e.target.value) || 0;
+                  setDepositAmount(Math.max(0, Math.min(value, playerState.budget)));
+                }}
                 className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-green-500"
               />
-              <div className="text-xs text-gray-500 mt-1">Available budget: ${playerState.budget}</div>
+              <div className="text-xs text-gray-500 mt-1">Available budget: ${Math.max(0, playerState.budget)}</div>
             </div>
 
             <div className="flex gap-2">
               <button
                 onClick={() => {
-                  const amount = parseInt((document.getElementById('deposit-input') as HTMLInputElement).value);
-                  if (amount > 0) {
-                    handlePlayerDeposit(amount);
+                  if (depositAmount > 0 && depositAmount <= playerState.budget) {
+                    handlePlayerDeposit(depositAmount);
+                  } else {
+                    alert('Invalid deposit amount!');
                   }
                 }}
-                className="flex-1 bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded font-semibold"
+                disabled={depositAmount <= 0 || depositAmount > playerState.budget}
+                className="flex-1 bg-green-500 hover:bg-green-600 disabled:bg-gray-300 disabled:cursor-not-allowed text-white px-4 py-2 rounded font-semibold"
               >
                 Deposit
               </button>
