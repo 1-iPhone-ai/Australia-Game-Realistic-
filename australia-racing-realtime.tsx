@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Plane, Trophy, DollarSign, Timer, MapPin, Zap, CheckCircle, XCircle, AlertCircle, HelpCircle } from 'lucide-react';
+import { Plane, Trophy, DollarSign, Timer, MapPin, Zap, CheckCircle, XCircle, AlertCircle, HelpCircle, Settings } from 'lucide-react';
 
 // =========================================
 // TYPE DEFINITIONS
@@ -60,6 +60,12 @@ interface Flight {
   to: string;
   cost: number;
   duration: number;
+}
+
+interface AISettings {
+  difficulty: 'easy' | 'medium' | 'hard' | 'expert';
+  actionDelayMin: number; // in seconds
+  actionDelayMax: number; // in seconds
 }
 
 // =========================================
@@ -241,6 +247,12 @@ export default function AustraliaRacingGame() {
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
   const [recentEvents, setRecentEvents] = useState<Record<string, { type: 'stolen' | 'claimed' | 'threat'; timestamp: number }>>({});
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error'; visible: boolean }>({ message: '', type: 'success', visible: false });
+  const [aiSettings, setAiSettings] = useState<AISettings>({
+    difficulty: 'medium',
+    actionDelayMin: 20,
+    actionDelayMax: 40,
+  });
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
 
   const activityFeedRef = useRef<HTMLDivElement>(null);
 
@@ -1046,16 +1058,18 @@ export default function AustraliaRacingGame() {
 
       // 3. SOPHISTICATED DEPOSIT EVALUATION
       const currentRegion = currentRegions[currentAiState.currentRegion];
-      if (!currentRegion) return; // CRITICAL FIX #4: Validate region exists
 
-      const aiDeposit = currentRegion.aiDeposit;
-      const playerDeposit = currentRegion.playerDeposit;
+      // DEPOSIT BUG FIX: Don't return early - just skip deposit evaluation if region invalid
+      // This was preventing deposits from happening and also exiting before action execution
+      if (currentRegion) {
+        const aiDeposit = currentRegion.aiDeposit;
+        const playerDeposit = currentRegion.playerDeposit;
 
-      // Diversity penalty for deposits
-      let depositDiversityPenalty = 0;
-      if (shouldEnforceDiversity('deposit')) {
-        depositDiversityPenalty = 500;
-      }
+        // Diversity penalty for deposits
+        let depositDiversityPenalty = 0;
+        if (shouldEnforceDiversity('deposit')) {
+          depositDiversityPenalty = 500;
+        }
 
       // BALANCE FIX: Reduced aggression - steal less
       if (currentRegion.controller === 'player') {
@@ -1147,6 +1161,7 @@ export default function AustraliaRacingGame() {
           });
         }
       }
+      } // End of currentRegion check - DEPOSIT BUG FIX
 
       // SOPHISTICATION: Pick best action with diversity enforcement
       if (actions.length === 0) return;
@@ -1215,8 +1230,14 @@ export default function AustraliaRacingGame() {
           return;
         }
 
-        // BALANCE FIX: Reduce AI success rate by 20% to make it less dominant
-        const aiSuccessRate = challenge.baseSuccessChance * 0.8;
+        // DIFFICULTY SETTING: Adjust AI success rate based on difficulty
+        let difficultyMultiplier = 1.0;
+        if (aiSettings.difficulty === 'easy') difficultyMultiplier = 0.6;
+        else if (aiSettings.difficulty === 'medium') difficultyMultiplier = 0.8;
+        else if (aiSettings.difficulty === 'hard') difficultyMultiplier = 0.95;
+        else if (aiSettings.difficulty === 'expert') difficultyMultiplier = 1.1;
+
+        const aiSuccessRate = challenge.baseSuccessChance * difficultyMultiplier;
         const success = Math.random() < aiSuccessRate;
 
         if (success) {
@@ -1435,8 +1456,9 @@ export default function AustraliaRacingGame() {
 
         await aiTakeAction();
 
-        // BALANCE FIX: Increased delay to slow down AI (20-40 seconds instead of 5-15)
-        const delayMs = Math.random() * 20000 + 20000;
+        // ACTION DELAY SETTING: Use configured delay from settings
+        const delayRange = (aiSettings.actionDelayMax - aiSettings.actionDelayMin) * 1000;
+        const delayMs = Math.random() * delayRange + (aiSettings.actionDelayMin * 1000);
 
         // CRITICAL FIX #12: Use breakable delay for cleanup
         await new Promise<void>((resolve) => {
@@ -1467,7 +1489,7 @@ export default function AustraliaRacingGame() {
       // Release lock if held during unmount
       aiActionLockRef.current = false;
     };
-  }, [aiTakeAction]);
+  }, [aiTakeAction, aiSettings]);
 
   // =========================================
   // RENDER
@@ -1490,6 +1512,14 @@ export default function AustraliaRacingGame() {
               <p className="text-sm text-gray-600">Real-time simultaneous racing game</p>
             </div>
             <div className="flex items-center gap-4">
+              <button
+                onClick={() => setShowSettingsModal(true)}
+                className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-2 rounded flex items-center gap-2 transition-colors"
+                title="AI Settings"
+              >
+                <Settings className="w-4 h-4" />
+                <span className="text-sm">AI Settings</span>
+              </button>
               <div className="text-center bg-orange-100 px-4 py-2 rounded">
                 <div className="text-xs text-gray-600">Day</div>
                 <div className="text-xl font-bold text-orange-600">{gameState.day} / 4</div>
@@ -2257,6 +2287,127 @@ export default function AustraliaRacingGame() {
                 className="mt-6 bg-orange-500 hover:bg-orange-600 text-white px-8 py-3 rounded-lg font-bold text-lg"
               >
                 Play Again
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI Settings Modal */}
+      {showSettingsModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-2xl font-bold text-orange-600 flex items-center gap-2">
+                <Settings className="w-6 h-6" />
+                AI Opponent Settings
+              </h2>
+              <button
+                onClick={() => setShowSettingsModal(false)}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                <XCircle className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="space-y-6">
+              {/* Difficulty Setting */}
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-2">
+                  AI Difficulty Level
+                </label>
+                <select
+                  value={aiSettings.difficulty}
+                  onChange={(e) => setAiSettings(prev => ({ ...prev, difficulty: e.target.value as AISettings['difficulty'] }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                >
+                  <option value="easy">Easy (60% success rate)</option>
+                  <option value="medium">Medium (80% success rate)</option>
+                  <option value="hard">Hard (95% success rate)</option>
+                  <option value="expert">Expert (110% success rate)</option>
+                </select>
+                <p className="mt-1 text-xs text-gray-500">
+                  Controls how often the AI succeeds at challenges
+                </p>
+              </div>
+
+              {/* Action Delay Settings */}
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-2">
+                  AI Action Delay
+                </label>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs text-gray-600 mb-1">Minimum (seconds)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="60"
+                      value={aiSettings.actionDelayMin}
+                      onChange={(e) => {
+                        const val = Math.max(1, Math.min(60, parseInt(e.target.value) || 1));
+                        setAiSettings(prev => ({
+                          ...prev,
+                          actionDelayMin: val,
+                          actionDelayMax: Math.max(val, prev.actionDelayMax)
+                        }));
+                      }}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-600 mb-1">Maximum (seconds)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="120"
+                      value={aiSettings.actionDelayMax}
+                      onChange={(e) => {
+                        const val = Math.max(1, Math.min(120, parseInt(e.target.value) || 1));
+                        setAiSettings(prev => ({
+                          ...prev,
+                          actionDelayMax: Math.max(val, prev.actionDelayMin)
+                        }));
+                      }}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                    />
+                  </div>
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  Time between AI actions: {aiSettings.actionDelayMin}s - {aiSettings.actionDelayMax}s
+                </p>
+              </div>
+
+              {/* Current Settings Summary */}
+              <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                <h3 className="text-sm font-bold text-gray-700 mb-2">Current Settings</h3>
+                <div className="text-sm space-y-1">
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Difficulty:</span>
+                    <span className="font-semibold text-gray-900 capitalize">{aiSettings.difficulty}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Action Delay:</span>
+                    <span className="font-semibold text-gray-900">{aiSettings.actionDelayMin}s - {aiSettings.actionDelayMax}s</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6 flex gap-3">
+              <button
+                onClick={() => setShowSettingsModal(false)}
+                className="flex-1 bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-bold transition-colors"
+              >
+                Apply Settings
+              </button>
+              <button
+                onClick={() => {
+                  setAiSettings({ difficulty: 'medium', actionDelayMin: 20, actionDelayMax: 40 });
+                }}
+                className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg font-semibold transition-colors"
+              >
+                Reset
               </button>
             </div>
           </div>
