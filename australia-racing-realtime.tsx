@@ -810,16 +810,16 @@ export default function AustraliaRacingGame() {
   ): number => {
     const riskTolerance = getRiskTolerance();
 
-    // Base wager on phase and risk
-    let basePercentage = 0.15; // 15% default
+    // BALANCE FIX: Reduced wager percentages to make AI less aggressive
+    let basePercentage = 0.08; // Reduced from 15% to 8%
 
-    if (phase === 'early') basePercentage = 0.10; // Conservative 10%
-    else if (phase === 'mid') basePercentage = 0.20; // Moderate 20%
-    else if (phase === 'late') basePercentage = 0.25; // Aggressive 25%
-    else if (phase === 'endgame') basePercentage = 0.35; // Very aggressive 35%
+    if (phase === 'early') basePercentage = 0.05; // Reduced from 10% to 5%
+    else if (phase === 'mid') basePercentage = 0.10; // Reduced from 20% to 10%
+    else if (phase === 'late') basePercentage = 0.12; // Reduced from 25% to 12%
+    else if (phase === 'endgame') basePercentage = 0.15; // Reduced from 35% to 15%
 
-    // Adjust by risk tolerance
-    basePercentage *= riskTolerance;
+    // Adjust by risk tolerance (reduced multiplier)
+    basePercentage *= (riskTolerance * 0.7);
 
     // Adjust by challenge success rate (bet more on safer challenges)
     const safetyFactor = challenge.baseSuccessChance;
@@ -1057,20 +1057,20 @@ export default function AustraliaRacingGame() {
         depositDiversityPenalty = 500;
       }
 
-      // SOPHISTICATION: Try to steal player regions
+      // BALANCE FIX: Reduced aggression - steal less
       if (currentRegion.controller === 'player') {
         const amountToSteal = playerDeposit - aiDeposit + 1;
-        const maxAffordable = Math.floor(currentAiState.budget * (0.3 + riskTolerance * 0.3)); // Adjust by risk
-        const actualAmount = Math.min(amountToSteal + 50, maxAffordable);
+        const maxAffordable = Math.floor(currentAiState.budget * (0.15 + riskTolerance * 0.15)); // Reduced from 0.3
+        const actualAmount = Math.min(amountToSteal + 20, maxAffordable); // Reduced buffer from 50 to 20
 
         if (actualAmount > 0 && canAfford(actualAmount)) {
-          // Higher value in endgame, lower in early game
-          let stealValue = 400;
-          if (gamePhase === 'endgame') stealValue = 700;
-          if (gamePhase === 'early') stealValue = 250;
+          // BALANCE FIX: Reduced steal values
+          let stealValue = 300; // Reduced from 400
+          if (gamePhase === 'endgame') stealValue = 500; // Reduced from 700
+          if (gamePhase === 'early') stealValue = 150; // Reduced from 250
 
           // Boost if close race
-          if (Math.abs(scoreDifferential) <= 1) stealValue += 200;
+          if (Math.abs(scoreDifferential) <= 1) stealValue += 100; // Reduced from 200
 
           actions.push({
             type: 'deposit',
@@ -1081,25 +1081,45 @@ export default function AustraliaRacingGame() {
         }
       }
 
-      // SOPHISTICATION: Secure uncontrolled regions
+      // DEPOSIT FIX: Make AI deposit in uncontrolled regions more often
       if (currentRegion.controller === null) {
-        const maxAffordable = Math.floor(currentAiState.budget * 0.25);
-        const baseAmount = Math.min(150, maxAffordable);
+        const maxAffordable = Math.floor(currentAiState.budget * 0.20); // Increased from 0.25
+        const baseAmount = Math.min(100, maxAffordable); // Reduced from 150
 
         // Vary amount based on phase
         let actualAmount = baseAmount;
-        if (gamePhase === 'early') actualAmount = Math.floor(baseAmount * 1.2); // More aggressive early
-        if (gamePhase === 'endgame') actualAmount = Math.floor(baseAmount * 0.8); // Less in endgame
+        if (gamePhase === 'early') actualAmount = Math.floor(baseAmount * 1.0); // Less aggressive
+        if (gamePhase === 'endgame') actualAmount = Math.floor(baseAmount * 0.6); // Even less in endgame
 
         if (actualAmount > 0 && canAfford(actualAmount)) {
-          // Value based on strategic importance
+          // DEPOSIT FIX: Increased value to make deposits more competitive
           const regionValue = getRegionStrategicValue(currentAiState.currentRegion);
-          const depositValue = Math.min(regionValue * 0.5, 500);
+          const depositValue = Math.min(regionValue * 1.5, 800); // Increased multiplier and cap
 
           actions.push({
             type: 'deposit',
             value: depositValue,
             data: { amount: actualAmount },
+            diversityPenalty: depositDiversityPenalty
+          });
+        }
+      }
+
+      // DEPOSIT FIX: Add logic to reinforce AI-controlled regions
+      if (currentRegion.controller === 'ai' && aiDeposit > 0) {
+        // Only reinforce if we have good budget and it's strategic
+        const maxAffordable = Math.floor(currentAiState.budget * 0.15);
+        const reinforceAmount = Math.min(Math.floor(aiDeposit * 0.3), maxAffordable);
+
+        if (reinforceAmount >= 50 && canAfford(reinforceAmount)) {
+          // Make this less valuable than claiming new regions
+          const regionValue = getRegionStrategicValue(currentAiState.currentRegion);
+          const reinforceValue = Math.min(regionValue * 0.8, 400); // Lower than claiming
+
+          actions.push({
+            type: 'deposit',
+            value: reinforceValue,
+            data: { amount: reinforceAmount },
             diversityPenalty: depositDiversityPenalty
           });
         }
@@ -1195,7 +1215,9 @@ export default function AustraliaRacingGame() {
           return;
         }
 
-        const success = Math.random() < challenge.baseSuccessChance;
+        // BALANCE FIX: Reduce AI success rate by 20% to make it less dominant
+        const aiSuccessRate = challenge.baseSuccessChance * 0.8;
+        const success = Math.random() < aiSuccessRate;
 
         if (success) {
           const winnings = Math.floor(wager * challenge.multiplier);
@@ -1413,8 +1435,8 @@ export default function AustraliaRacingGame() {
 
         await aiTakeAction();
 
-        // Random delay between 5-15 seconds for demo
-        const delayMs = Math.random() * 10000 + 5000;
+        // BALANCE FIX: Increased delay to slow down AI (20-40 seconds instead of 5-15)
+        const delayMs = Math.random() * 20000 + 20000;
 
         // CRITICAL FIX #12: Use breakable delay for cleanup
         await new Promise<void>((resolve) => {
