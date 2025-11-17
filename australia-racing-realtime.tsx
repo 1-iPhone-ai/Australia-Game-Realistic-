@@ -266,7 +266,7 @@ export default function AustraliaRacingGame() {
   // =========================================
 
   const addLog = useCallback((message: string, type: ActivityLog['type'], player: 'player' | 'ai') => {
-    setActivityLog(prev => [...prev, { timestamp: Date.now(), message, type, player }].slice(-20));
+    setActivityLog(prev => [...prev, { timestamp: Date.now(), message, type, player }].slice(-50));
     // Auto-scroll to bottom after adding new log
     setTimeout(() => {
       if (activityFeedRef.current) {
@@ -1802,24 +1802,52 @@ export default function AustraliaRacingGame() {
 
             {/* Activity Feed */}
             <div className="bg-white rounded-lg shadow-lg p-4">
-              <h3 className="font-bold text-gray-700 mb-3 flex items-center gap-2">
-                📊 Live Activity Feed
-              </h3>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-bold text-gray-700 flex items-center gap-2">
+                  📊 Live Activity Feed
+                </h3>
+                <div className="text-xs text-gray-500">
+                  {(() => {
+                    const filtered = activityLog.filter((log) => {
+                      if (gameState.day > 1) {
+                        const isStartupMessage = log.message.includes('Game started') ||
+                                                log.message.includes('Starting budget') ||
+                                                log.message.includes('Day 1 begins');
+                        if (isStartupMessage) return false;
+                      }
+                      return true;
+                    });
+                    return `${filtered.length} events`;
+                  })()}
+                </div>
+              </div>
               <div
                 ref={activityFeedRef}
                 className="space-y-1 max-h-60 overflow-y-auto scroll-smooth"
               >
-                {[...activityLog]
-                  .reverse()
-                  .filter((log, idx) => {
-                    // Only show startup messages if we're still in early game
-                    const isStartupMessage = log.message.includes('Game started') ||
-                                            log.message.includes('Starting budget') ||
-                                            (log.message.includes('Day 1 begins') && gameState.day === 1);
-                    if (isStartupMessage && gameState.day > 1) return false;
-                    return true;
-                  })
-                  .map((log, idx) => (
+                {(() => {
+                  const filtered = [...activityLog]
+                    .reverse()
+                    .filter((log) => {
+                      // Hide startup messages after Day 1
+                      if (gameState.day > 1) {
+                        const isStartupMessage = log.message.includes('Game started') ||
+                                                log.message.includes('Starting budget') ||
+                                                log.message.includes('Day 1 begins');
+                        if (isStartupMessage) return false;
+                      }
+                      return true;
+                    });
+
+                  if (filtered.length === 0) {
+                    return (
+                      <div className="text-sm text-gray-400 text-center py-8">
+                        No activity yet. Actions will appear here...
+                      </div>
+                    );
+                  }
+
+                  return filtered.map((log, idx) => (
                     <div
                       key={log.timestamp + idx}
                       className={`text-sm p-2 rounded transition-all ${
@@ -1831,7 +1859,8 @@ export default function AustraliaRacingGame() {
                     >
                       {log.message}
                     </div>
-                  ))}
+                  ));
+                })()}
               </div>
             </div>
           </div>
