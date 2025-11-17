@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Plane, Trophy, DollarSign, Timer, MapPin, Zap, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
+import { Plane, Trophy, DollarSign, Timer, MapPin, Zap, CheckCircle, XCircle, AlertCircle, HelpCircle } from 'lucide-react';
 
 // =========================================
 // TYPE DEFINITIONS
@@ -37,6 +37,7 @@ interface PlayerState {
   currentActivity: string | null;
   travelDestination: string | null;
   travelProgress: number;
+  challengeProgress: number;
   visitedRegions: string[];
 }
 
@@ -187,6 +188,7 @@ export default function AustraliaRacingGame() {
     currentActivity: null,
     travelDestination: null,
     travelProgress: 0,
+    challengeProgress: 0,
     visitedRegions: ['NSW'],
   });
 
@@ -198,6 +200,7 @@ export default function AustraliaRacingGame() {
     currentActivity: null,
     travelDestination: null,
     travelProgress: 0,
+    challengeProgress: 0,
     visitedRegions: ['QLD'],
   });
 
@@ -488,12 +491,12 @@ export default function AustraliaRacingGame() {
 
   const handlePlayerChallenge = async (challenge: Challenge, wager: number) => {
     if (playerState.isBusy || playerState.isTraveling) {
-      alert("You're currently busy!");
+      showNotification("You're currently busy!", 'error');
       return;
     }
 
     if (wager > playerState.budget) {
-      alert("Insufficient budget!");
+      showNotification("Insufficient budget!", 'error');
       return;
     }
 
@@ -501,10 +504,25 @@ export default function AustraliaRacingGame() {
       ...prev,
       isBusy: true,
       currentActivity: `Attempting ${challenge.name}...`,
+      challengeProgress: 0,
     }));
 
     addLog(`🎯 Started "${challenge.name}" (wagered $${wager})`, 'info', 'player');
     setShowChallengeModal(false);
+
+    // Animate challenge progress
+    const startTime = Date.now();
+    const endTime = startTime + (challenge.duration * 1000);
+
+    const progressInterval = setInterval(() => {
+      const now = Date.now();
+      const progress = Math.min(100, ((now - startTime) / (challenge.duration * 1000)) * 100);
+      setPlayerState(prev => ({ ...prev, challengeProgress: progress }));
+
+      if (now >= endTime) {
+        clearInterval(progressInterval);
+      }
+    }, 100);
 
     // Simulate challenge duration
     await delay(challenge.duration * 1000);
@@ -519,6 +537,7 @@ export default function AustraliaRacingGame() {
         budget: prev.budget + winnings,
         isBusy: false,
         currentActivity: null,
+        challengeProgress: 0,
       }));
       addLog(`✅ Completed "${challenge.name}"! Won $${winnings} (profit: $${profit})`, 'success', 'player');
       showNotification(`🎉 Challenge Success! +$${profit} profit`, 'success');
@@ -528,6 +547,7 @@ export default function AustraliaRacingGame() {
         budget: prev.budget - wager,
         isBusy: false,
         currentActivity: null,
+        challengeProgress: 0,
       }));
       addLog(`❌ Failed "${challenge.name}". Lost $${wager}`, 'error', 'player');
       showNotification(`💔 Challenge Failed! -$${wager}`, 'error');
@@ -536,12 +556,12 @@ export default function AustraliaRacingGame() {
 
   const handlePlayerTravel = async (destination: string, cost: number, duration: number) => {
     if (playerState.isBusy || playerState.isTraveling) {
-      alert("You're currently busy!");
+      showNotification("You're currently busy!", 'error');
       return;
     }
 
     if (cost > playerState.budget) {
-      alert("Insufficient budget for this flight!");
+      showNotification("Insufficient budget for this flight!", 'error');
       return;
     }
 
@@ -608,13 +628,24 @@ export default function AustraliaRacingGame() {
 
   const handlePlayerDeposit = (amount: number) => {
     if (amount > playerState.budget) {
-      alert("Insufficient budget!");
+      showNotification("Insufficient budget!", 'error');
       return;
     }
 
     if (amount <= 0) {
-      alert("Please enter a valid amount!");
+      showNotification("Please enter a valid amount!", 'error');
       return;
+    }
+
+    // Confirm large deposits (>40% of budget) to prevent costly mistakes
+    const percentOfBudget = (amount / playerState.budget) * 100;
+    if (amount > playerState.budget * 0.4) {
+      const confirmed = window.confirm(
+        `This will lock $${amount} (${Math.round(percentOfBudget)}% of your budget) in this region.\n\nDeposits are permanent and cannot be withdrawn.\n\nContinue?`
+      );
+      if (!confirmed) {
+        return;
+      }
     }
 
     const region = playerState.currentRegion;
@@ -1499,6 +1530,21 @@ export default function AustraliaRacingGame() {
                   </div>
                 )}
 
+                {playerState.isBusy && (
+                  <div className="mt-3">
+                    <div className="text-sm text-gray-600 mb-1 flex items-center gap-1">
+                      <Zap className="w-4 h-4" />
+                      Challenge Progress: {Math.round(playerState.challengeProgress)}%
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div
+                        className="bg-purple-500 h-2 rounded-full transition-all duration-300"
+                        style={{ width: `${playerState.challengeProgress}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
                 {playerState.isTraveling && (
                   <div className="mt-3">
                     <div className="text-sm text-gray-600 mb-1 flex items-center gap-1">
@@ -1869,7 +1915,15 @@ export default function AustraliaRacingGame() {
 
       {/* Challenge Modal */}
       {showChallengeModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowChallengeModal(false);
+              setSelectedChallenge(null);
+            }
+          }}
+        >
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-bold text-gray-800">Choose Challenge - {REGIONS[playerState.currentRegion].name}</h2>
@@ -1889,6 +1943,14 @@ export default function AustraliaRacingGame() {
                         : 'border-gray-300 hover:border-purple-300'
                     }`}
                     onClick={() => setSelectedChallenge(challenge)}
+                    onDoubleClick={() => {
+                      // Quick attempt with smart wager on double-click
+                      const smartWager = calculateSmartWager(challenge);
+                      if (smartWager > 0 && smartWager <= playerState.budget) {
+                        handlePlayerChallenge(challenge, smartWager);
+                      }
+                    }}
+                    title="Double-click to quick attempt with recommended wager"
                   >
                     <div className="flex items-start justify-between">
                       <div className="font-semibold text-gray-800">
@@ -1896,8 +1958,12 @@ export default function AustraliaRacingGame() {
                         <span className="ml-2 text-xs text-gray-500">(Press {idx + 1})</span>
                       </div>
                       {expectedProfit > 0 && (
-                        <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">
+                        <span
+                          className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded flex items-center gap-1 cursor-help"
+                          title={`Expected Value: (Wager × Multiplier × Success%) - (Wager × Fail%) = ($${smartWager} × ${challenge.multiplier} × ${(challenge.baseSuccessChance * 100).toFixed(0)}%) - ($${smartWager} × ${((1 - challenge.baseSuccessChance) * 100).toFixed(0)}%)`}
+                        >
                           +${expectedProfit} avg
+                          <HelpCircle className="w-3 h-3" />
                         </span>
                       )}
                     </div>
@@ -1914,7 +1980,7 @@ export default function AustraliaRacingGame() {
                     {selectedChallenge === challenge && (
                       <div className="mt-3 pt-3 border-t border-gray-200">
                         <label className="block text-sm font-semibold text-gray-700 mb-1">
-                          Wager Amount: <span className="text-xs text-gray-500">(Smart: ${smartWager})</span>
+                          Wager Amount: <span className="text-xs text-green-600 font-medium">(Recommended: ${smartWager})</span>
                         </label>
                         <input
                           type="number"
@@ -1962,7 +2028,14 @@ export default function AustraliaRacingGame() {
 
       {/* Travel Modal */}
       {showTravelModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowTravelModal(false);
+            }
+          }}
+        >
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-bold text-gray-800">Book Flight from {REGIONS[playerState.currentRegion].name}</h2>
@@ -2012,7 +2085,14 @@ export default function AustraliaRacingGame() {
 
       {/* Deposit Modal */}
       {showDepositModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowDepositModal(false);
+            }
+          }}
+        >
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-bold text-gray-800">Deposit in {REGIONS[playerState.currentRegion].name}</h2>
@@ -2044,7 +2124,13 @@ export default function AustraliaRacingGame() {
                   </div>
                 )}
                 <div className="flex justify-between pt-2 border-t border-gray-300">
-                  <span className="text-gray-600">Amount to Control:</span>
+                  <span className="text-gray-600 flex items-center gap-1">
+                    Amount to Control:
+                    <HelpCircle
+                      className="w-3 h-3 cursor-help"
+                      title="Minimum deposit needed to control this region = (AI Deposit - Your Deposit + $1)"
+                    />
+                  </span>
                   <span className="font-bold text-purple-600">
                     ${Math.max(regions[playerState.currentRegion].aiDeposit - regions[playerState.currentRegion].playerDeposit + 1, 1)}
                   </span>
@@ -2054,7 +2140,7 @@ export default function AustraliaRacingGame() {
 
             <div className="mb-4">
               <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Deposit Amount: <span className="text-xs text-gray-500">(Smart: ${calculateSmartDeposit(playerState.currentRegion)})</span>
+                Deposit Amount: <span className="text-xs text-green-600 font-medium">(Recommended: ${calculateSmartDeposit(playerState.currentRegion)})</span>
               </label>
               <input
                 type="number"
@@ -2157,7 +2243,7 @@ export default function AustraliaRacingGame() {
 
       {/* Challenge Outcome Notification */}
       {notification.visible && (
-        <div className={`fixed top-24 left-1/2 transform -translate-x-1/2 z-50 px-6 py-4 rounded-lg shadow-2xl border-4 transition-all duration-300 ${
+        <div className={`fixed top-32 left-1/2 transform -translate-x-1/2 z-[60] px-6 py-4 rounded-lg shadow-2xl border-4 transition-all duration-300 max-w-md w-auto ${
           notification.type === 'success'
             ? 'bg-green-500 border-green-600 text-white'
             : 'bg-red-500 border-red-600 text-white'
