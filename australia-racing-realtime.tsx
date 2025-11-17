@@ -232,7 +232,12 @@ export default function AustraliaRacingGame() {
     winner: null,
   });
 
-  const [activityLog, setActivityLog] = useState<ActivityLog[]>([]);
+  // Initialize activity log with lazy initializer to prevent duplicates in StrictMode
+  const [activityLog, setActivityLog] = useState<ActivityLog[]>(() => [
+    { timestamp: Date.now(), message: "🎮 Game started! Race to control Australia!", type: 'info', player: 'player' },
+    { timestamp: Date.now() + 1, message: "💰 Starting budget: $1,000", type: 'info', player: 'player' },
+    { timestamp: Date.now() + 2, message: "🏁 Day 1 begins - Good luck!", type: 'success', player: 'player' },
+  ]);
 
   const [selectedChallenge, setSelectedChallenge] = useState<Challenge | null>(null);
   const [showChallengeModal, setShowChallengeModal] = useState(false);
@@ -272,7 +277,6 @@ export default function AustraliaRacingGame() {
   const aiLastChallengesByRegion = useRef<Record<string, string>>({});
   const aiConsecutiveActionTypes = useRef<string[]>([]);
   const aiLastActionTimestamp = useRef<number>(0);
-  const initialLogsAdded = useRef<boolean>(false);
 
   // =========================================
   // UTILITY FUNCTIONS
@@ -373,21 +377,6 @@ export default function AustraliaRacingGame() {
   useEffect(() => {
     regionsRef.current = regions;
   }, [regions]);
-
-  // =========================================
-  // INITIALIZE ACTIVITY LOG (Run once only)
-  // =========================================
-
-  useEffect(() => {
-    if (!initialLogsAdded.current) {
-      initialLogsAdded.current = true;
-      setActivityLog([
-        { timestamp: Date.now(), message: "🎮 Game started! Race to control Australia!", type: 'info', player: 'player' },
-        { timestamp: Date.now() + 1, message: "💰 Starting budget: $1,000", type: 'info', player: 'player' },
-        { timestamp: Date.now() + 2, message: "🏁 Day 1 begins - Good luck!", type: 'success', player: 'player' },
-      ]);
-    }
-  }, []);
 
   // =========================================
   // VISUAL ALERTS & EVENTS CLEANUP
