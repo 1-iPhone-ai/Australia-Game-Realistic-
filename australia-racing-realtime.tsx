@@ -237,6 +237,9 @@ export default function AustraliaRacingGame() {
   const [hoveredRegion, setHoveredRegion] = useState<string | null>(null);
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
   const [recentEvents, setRecentEvents] = useState<Record<string, { type: 'stolen' | 'claimed' | 'threat'; timestamp: number }>>({});
+  const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error'; visible: boolean }>({ message: '', type: 'success', visible: false });
+
+  const activityFeedRef = useRef<HTMLDivElement>(null);
 
   const aiIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const gameStartTime = useRef<number>(Date.now());
@@ -264,6 +267,19 @@ export default function AustraliaRacingGame() {
 
   const addLog = useCallback((message: string, type: ActivityLog['type'], player: 'player' | 'ai') => {
     setActivityLog(prev => [...prev, { timestamp: Date.now(), message, type, player }].slice(-20));
+    // Auto-scroll to bottom after adding new log
+    setTimeout(() => {
+      if (activityFeedRef.current) {
+        activityFeedRef.current.scrollTop = 0; // Scroll to top since we reverse the array
+      }
+    }, 100);
+  }, []);
+
+  const showNotification = useCallback((message: string, type: 'success' | 'error') => {
+    setNotification({ message, type, visible: true });
+    setTimeout(() => {
+      setNotification(prev => ({ ...prev, visible: false }));
+    }, 3000);
   }, []);
 
   const formatTime = (seconds: number): string => {
@@ -497,13 +513,15 @@ export default function AustraliaRacingGame() {
 
     if (success) {
       const winnings = Math.floor(wager * challenge.multiplier);
+      const profit = winnings - wager;
       setPlayerState(prev => ({
         ...prev,
         budget: prev.budget + winnings,
         isBusy: false,
         currentActivity: null,
       }));
-      addLog(`✅ Completed "${challenge.name}"! Won $${winnings} (profit: $${winnings - wager})`, 'success', 'player');
+      addLog(`✅ Completed "${challenge.name}"! Won $${winnings} (profit: $${profit})`, 'success', 'player');
+      showNotification(`🎉 Challenge Success! +$${profit} profit`, 'success');
     } else {
       setPlayerState(prev => ({
         ...prev,
@@ -512,6 +530,7 @@ export default function AustraliaRacingGame() {
         currentActivity: null,
       }));
       addLog(`❌ Failed "${challenge.name}". Lost $${wager}`, 'error', 'player');
+      showNotification(`💔 Challenge Failed! -$${wager}`, 'error');
     }
   };
 
@@ -1786,20 +1805,33 @@ export default function AustraliaRacingGame() {
               <h3 className="font-bold text-gray-700 mb-3 flex items-center gap-2">
                 📊 Live Activity Feed
               </h3>
-              <div className="space-y-1 max-h-60 overflow-y-auto">
-                {[...activityLog].reverse().map((log, idx) => (
-                  <div
-                    key={log.timestamp + idx}
-                    className={`text-sm p-2 rounded ${
-                      log.type === 'success' ? 'bg-green-50 text-green-700' :
-                      log.type === 'error' ? 'bg-red-50 text-red-700' :
-                      log.type === 'warning' ? 'bg-orange-50 text-orange-700' :
-                      'bg-gray-50 text-gray-700'
-                    }`}
-                  >
-                    {log.message}
-                  </div>
-                ))}
+              <div
+                ref={activityFeedRef}
+                className="space-y-1 max-h-60 overflow-y-auto scroll-smooth"
+              >
+                {[...activityLog]
+                  .reverse()
+                  .filter((log, idx) => {
+                    // Only show startup messages if we're still in early game
+                    const isStartupMessage = log.message.includes('Game started') ||
+                                            log.message.includes('Starting budget') ||
+                                            (log.message.includes('Day 1 begins') && gameState.day === 1);
+                    if (isStartupMessage && gameState.day > 1) return false;
+                    return true;
+                  })
+                  .map((log, idx) => (
+                    <div
+                      key={log.timestamp + idx}
+                      className={`text-sm p-2 rounded transition-all ${
+                        log.type === 'success' ? 'bg-green-50 text-green-700 border-l-4 border-green-500' :
+                        log.type === 'error' ? 'bg-red-50 text-red-700 border-l-4 border-red-500' :
+                        log.type === 'warning' ? 'bg-orange-50 text-orange-700 border-l-4 border-orange-500' :
+                        'bg-gray-50 text-gray-700 border-l-4 border-gray-300'
+                      } ${log.player === 'ai' ? 'ml-2' : ''}`}
+                    >
+                      {log.message}
+                    </div>
+                  ))}
               </div>
             </div>
           </div>
@@ -2090,6 +2122,19 @@ export default function AustraliaRacingGame() {
                 Play Again
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Challenge Outcome Notification */}
+      {notification.visible && (
+        <div className={`fixed top-24 left-1/2 transform -translate-x-1/2 z-50 px-6 py-4 rounded-lg shadow-2xl border-4 transition-all duration-300 ${
+          notification.type === 'success'
+            ? 'bg-green-500 border-green-600 text-white'
+            : 'bg-red-500 border-red-600 text-white'
+        } animate-bounce`}>
+          <div className="text-xl font-bold text-center">
+            {notification.message}
           </div>
         </div>
       )}
