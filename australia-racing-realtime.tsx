@@ -39,6 +39,10 @@ interface PlayerState {
   travelProgress: number;
   challengeProgress: number;
   visitedRegions: string[];
+  activePowerUps: ActivePowerUp[];
+  powerUpCooldown: number; // timestamp
+  bankLoanDebt: number; // for Bank Loan power-up
+  passiveIncomeRate: number; // for Sponsorship Deal power-up
 }
 
 interface GameState {
@@ -53,6 +57,22 @@ interface ActivityLog {
   message: string;
   type: 'info' | 'success' | 'warning' | 'error';
   player: 'player' | 'ai';
+}
+
+interface PowerUp {
+  id: string;
+  name: string;
+  category: 'challenge' | 'travel' | 'deposit' | 'economy';
+  cost: number;
+  duration: number; // milliseconds (0 for single-use)
+  description: string;
+  effectType: string;
+  isSingleUse: boolean;
+}
+
+interface ActivePowerUp extends PowerUp {
+  activatedAt: number;
+  usedUp?: boolean;
 }
 
 interface Flight {
@@ -181,6 +201,200 @@ const FLIGHT_DURATIONS: Record<string, Record<string, number>> = {
 };
 
 // =========================================
+// POWER-UP CATALOG
+// =========================================
+
+const POWERUPS: PowerUp[] = [
+  // CHALLENGE POWER-UPS
+  {
+    id: 'lucky_streak',
+    name: 'Lucky Streak',
+    category: 'challenge',
+    cost: 150,
+    duration: 45000,
+    description: '+25% success rate on challenges',
+    effectType: 'success_boost',
+    isSingleUse: false,
+  },
+  {
+    id: 'double_down',
+    name: 'Double Down',
+    category: 'challenge',
+    cost: 200,
+    duration: 0,
+    description: 'Next challenge pays 2x multiplier',
+    effectType: 'payout_multiplier',
+    isSingleUse: true,
+  },
+  {
+    id: 'adrenaline_rush',
+    name: 'Adrenaline Rush',
+    category: 'challenge',
+    cost: 120,
+    duration: 60000,
+    description: 'Challenges complete 50% faster',
+    effectType: 'speed_boost',
+    isSingleUse: false,
+  },
+  {
+    id: 'guaranteed_win',
+    name: 'Guaranteed Win',
+    category: 'challenge',
+    cost: 300,
+    duration: 0,
+    description: 'Next challenge guaranteed success',
+    effectType: 'auto_win',
+    isSingleUse: true,
+  },
+  {
+    id: 'risk_taker',
+    name: 'Risk Taker',
+    category: 'challenge',
+    cost: 100,
+    duration: 30000,
+    description: '1.5x payout but 2x fail rate',
+    effectType: 'high_risk',
+    isSingleUse: false,
+  },
+
+  // TRAVEL POWER-UPS
+  {
+    id: 'express_flight',
+    name: 'Express Flight',
+    category: 'travel',
+    cost: 180,
+    duration: 0,
+    description: '-40% flight time, -$50 cost',
+    effectType: 'fast_travel',
+    isSingleUse: true,
+  },
+  {
+    id: 'tourist_visa',
+    name: 'Tourist Visa',
+    category: 'travel',
+    cost: 250,
+    duration: 90000,
+    description: 'Welcome bonuses +50% ($1,125)',
+    effectType: 'bonus_boost',
+    isSingleUse: false,
+  },
+  {
+    id: 'gps_navigation',
+    name: 'GPS Navigation',
+    category: 'travel',
+    cost: 140,
+    duration: 60000,
+    description: "Reveal AI's next destination",
+    effectType: 'reveal_ai',
+    isSingleUse: false,
+  },
+  {
+    id: 'budget_airlines',
+    name: 'Budget Airlines',
+    category: 'travel',
+    cost: 100,
+    duration: 60000,
+    description: '-30% flight costs',
+    effectType: 'cost_reduction',
+    isSingleUse: false,
+  },
+
+  // DEPOSIT POWER-UPS
+  {
+    id: 'iron_grip',
+    name: 'Iron Grip',
+    category: 'deposit',
+    cost: 200,
+    duration: 45000,
+    description: 'Your deposits count as 1.5x',
+    effectType: 'deposit_boost',
+    isSingleUse: false,
+  },
+  {
+    id: 'fortress',
+    name: 'Fortress',
+    category: 'deposit',
+    cost: 300,
+    duration: 60000,
+    description: 'AI deposits lose 25% value',
+    effectType: 'enemy_debuff',
+    isSingleUse: false,
+  },
+  {
+    id: 'shield_protocol',
+    name: 'Shield Protocol',
+    category: 'deposit',
+    cost: 150,
+    duration: 90000,
+    description: 'AI cannot deposit in your regions',
+    effectType: 'block_enemy',
+    isSingleUse: false,
+  },
+  {
+    id: 'deposit_surge',
+    name: 'Deposit Surge',
+    category: 'deposit',
+    cost: 180,
+    duration: 0,
+    description: 'Next deposit costs 50% less',
+    effectType: 'cost_reduction',
+    isSingleUse: true,
+  },
+  {
+    id: 'aggressive_takeover',
+    name: 'Aggressive Takeover',
+    category: 'deposit',
+    cost: 220,
+    duration: 0,
+    description: 'Next deposit only needs 75% to control',
+    effectType: 'threshold_reduction',
+    isSingleUse: true,
+  },
+
+  // ECONOMY POWER-UPS
+  {
+    id: 'gold_rush',
+    name: 'Gold Rush',
+    category: 'economy',
+    cost: 250,
+    duration: 60000,
+    description: 'All challenge winnings +40%',
+    effectType: 'income_boost',
+    isSingleUse: false,
+  },
+  {
+    id: 'penny_pincher',
+    name: 'Penny Pincher',
+    category: 'economy',
+    cost: 120,
+    duration: 90000,
+    description: 'All costs -20%',
+    effectType: 'cost_reduction',
+    isSingleUse: false,
+  },
+  {
+    id: 'sponsorship_deal',
+    name: 'Sponsorship Deal',
+    category: 'economy',
+    cost: 175,
+    duration: 45000,
+    description: '+$1/second passive income',
+    effectType: 'passive_income',
+    isSingleUse: false,
+  },
+  {
+    id: 'bank_loan',
+    name: 'Bank Loan',
+    category: 'economy',
+    cost: 0,
+    duration: 0,
+    description: '+$200 now, -$300 at game end',
+    effectType: 'loan',
+    isSingleUse: true,
+  },
+];
+
+// =========================================
 // MAIN GAME COMPONENT
 // =========================================
 
@@ -196,6 +410,10 @@ export default function AustraliaRacingGame() {
     travelProgress: 0,
     challengeProgress: 0,
     visitedRegions: ['NSW'],
+    activePowerUps: [],
+    powerUpCooldown: 0,
+    bankLoanDebt: 0,
+    passiveIncomeRate: 0,
   });
 
   const [aiState, setAiState] = useState<PlayerState>({
@@ -208,6 +426,10 @@ export default function AustraliaRacingGame() {
     travelProgress: 0,
     challengeProgress: 0,
     visitedRegions: ['QLD'],
+    activePowerUps: [],
+    powerUpCooldown: 0,
+    bankLoanDebt: 0,
+    passiveIncomeRate: 0,
   });
 
   const [regions, setRegions] = useState<Record<string, RegionState>>(() => {
@@ -239,6 +461,8 @@ export default function AustraliaRacingGame() {
   const [showTravelModal, setShowTravelModal] = useState(false);
   const [showDepositModal, setShowDepositModal] = useState(false);
   const [showGameOverModal, setShowGameOverModal] = useState(false);
+  const [showPowerUpModal, setShowPowerUpModal] = useState(false);
+  const [selectedPowerUpCategory, setSelectedPowerUpCategory] = useState<'all' | 'challenge' | 'travel' | 'deposit' | 'economy'>('all');
   const [hoveredRegion, setHoveredRegion] = useState<string | null>(null);
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
   const [recentEvents, setRecentEvents] = useState<Record<string, { type: 'stolen' | 'claimed' | 'threat'; timestamp: number }>>({});
@@ -412,6 +636,90 @@ export default function AustraliaRacingGame() {
   }, []);
 
   // =========================================
+  // POWER-UP EXPIRATION & PASSIVE INCOME
+  // =========================================
+
+  useEffect(() => {
+    if (gameState.gameStatus !== 'active') return;
+
+    const ticker = setInterval(() => {
+      const now = Date.now();
+
+      // Handle player power-ups
+      setPlayerState(prev => {
+        // Remove expired power-ups
+        const activeUps = prev.activePowerUps.filter(pu => {
+          if (pu.isSingleUse) return !pu.usedUp; // Keep single-use if not used
+          const elapsed = now - pu.activatedAt;
+          const isExpired = elapsed >= pu.duration;
+          if (isExpired) {
+            addLog(`⏰ ${pu.name} expired`, 'info', 'player');
+          }
+          return !isExpired;
+        });
+
+        // Calculate passive income
+        let budgetIncrease = 0;
+        if (prev.passiveIncomeRate > 0) {
+          budgetIncrease = prev.passiveIncomeRate; // +$1/sec per sponsorship
+        }
+
+        // Update passive income rate (remove if sponsorship expired)
+        let newPassiveIncome = 0;
+        activeUps.forEach(pu => {
+          if (pu.id === 'sponsorship_deal') {
+            newPassiveIncome += 1;
+          }
+        });
+
+        return {
+          ...prev,
+          activePowerUps: activeUps,
+          budget: prev.budget + budgetIncrease,
+          passiveIncomeRate: newPassiveIncome,
+        };
+      });
+
+      // Handle AI power-ups
+      setAiState(prev => {
+        // Remove expired power-ups
+        const activeUps = prev.activePowerUps.filter(pu => {
+          if (pu.isSingleUse) return !pu.usedUp;
+          const elapsed = now - pu.activatedAt;
+          const isExpired = elapsed >= pu.duration;
+          if (isExpired) {
+            addLog(`⏰ AI's ${pu.name} expired`, 'info', 'ai');
+          }
+          return !isExpired;
+        });
+
+        // Calculate passive income
+        let budgetIncrease = 0;
+        if (prev.passiveIncomeRate > 0) {
+          budgetIncrease = prev.passiveIncomeRate;
+        }
+
+        // Update passive income rate
+        let newPassiveIncome = 0;
+        activeUps.forEach(pu => {
+          if (pu.id === 'sponsorship_deal') {
+            newPassiveIncome += 1;
+          }
+        });
+
+        return {
+          ...prev,
+          activePowerUps: activeUps,
+          budget: prev.budget + budgetIncrease,
+          passiveIncomeRate: newPassiveIncome,
+        };
+      });
+    }, 1000); // Check every second
+
+    return () => clearInterval(ticker);
+  }, [gameState.gameStatus, addLog]);
+
+  // =========================================
   // KEYBOARD SHORTCUTS
   // =========================================
 
@@ -430,6 +738,7 @@ export default function AustraliaRacingGame() {
         setShowChallengeModal(false);
         setShowTravelModal(false);
         setShowDepositModal(false);
+        setShowPowerUpModal(false);
         setSelectedChallenge(null);
         setSelectedRegion(null);
         return;
@@ -493,6 +802,16 @@ export default function AustraliaRacingGame() {
             if (playerRegions > aiRegions) winner = 'player';
             else if (aiRegions > playerRegions) winner = 'ai';
 
+            // Deduct bank loans from final budgets
+            if (playerState.bankLoanDebt > 0) {
+              setPlayerState(p => ({ ...p, budget: p.budget - p.bankLoanDebt }));
+              addLog(`💳 Bank Loan deducted: -$${playerState.bankLoanDebt}`, 'warning', 'player');
+            }
+            if (aiState.bankLoanDebt > 0) {
+              setAiState(a => ({ ...a, budget: a.budget - a.bankLoanDebt }));
+              addLog(`💳 AI Bank Loan deducted: -$${aiState.bankLoanDebt}`, 'warning', 'ai');
+            }
+
             addLog(`🏁 GAME OVER! Final Score - You: ${playerRegions} regions, AI: ${aiRegions} regions`, 'success', 'player');
             setShowGameOverModal(true);
 
@@ -525,6 +844,24 @@ export default function AustraliaRacingGame() {
       return;
     }
 
+    // POWER-UP: Check for active challenge power-ups
+    const hasGuaranteedWin = isPowerUpActive('player', 'guaranteed_win');
+    const hasLuckyStreak = isPowerUpActive('player', 'lucky_streak');
+    const hasAdrenalineRush = isPowerUpActive('player', 'adrenaline_rush');
+    const hasDoubleDown = isPowerUpActive('player', 'double_down');
+    const hasRiskTaker = isPowerUpActive('player', 'risk_taker');
+    const hasGoldRush = isPowerUpActive('player', 'gold_rush');
+
+    // Calculate adjusted success rate
+    let adjustedSuccessRate = challenge.baseSuccessChance;
+    if (hasLuckyStreak) adjustedSuccessRate *= 1.25;
+    if (hasRiskTaker) adjustedSuccessRate *= 0.5; // 2x fail rate = 0.5x success
+    adjustedSuccessRate = Math.min(1, adjustedSuccessRate); // Cap at 100%
+
+    // Calculate adjusted duration
+    let adjustedDuration = challenge.duration;
+    if (hasAdrenalineRush) adjustedDuration *= 0.5;
+
     setPlayerState(prev => ({
       ...prev,
       isBusy: true,
@@ -537,11 +874,11 @@ export default function AustraliaRacingGame() {
 
     // Animate challenge progress
     const startTime = Date.now();
-    const endTime = startTime + (challenge.duration * 1000);
+    const endTime = startTime + (adjustedDuration * 1000);
 
     const progressInterval = setInterval(() => {
       const now = Date.now();
-      const progress = Math.min(100, ((now - startTime) / (challenge.duration * 1000)) * 100);
+      const progress = Math.min(100, ((now - startTime) / (adjustedDuration * 1000)) * 100);
       setPlayerState(prev => ({ ...prev, challengeProgress: progress }));
 
       if (now >= endTime) {
@@ -550,12 +887,27 @@ export default function AustraliaRacingGame() {
     }, 100);
 
     // Simulate challenge duration
-    await delay(challenge.duration * 1000);
+    await delay(adjustedDuration * 1000);
 
-    const success = Math.random() < challenge.baseSuccessChance;
+    // Determine success
+    const success = hasGuaranteedWin ? true : (Math.random() < adjustedSuccessRate);
+
+    // Consume single-use power-ups
+    if (hasGuaranteedWin) consumePowerUp('player', 'guaranteed_win');
+    if (hasDoubleDown && success) consumePowerUp('player', 'double_down');
 
     if (success) {
-      const winnings = Math.floor(wager * challenge.multiplier);
+      let multiplier = challenge.multiplier;
+
+      // POWER-UP: Apply multipliers
+      if (hasDoubleDown) multiplier *= 2;
+      if (hasRiskTaker) multiplier *= 1.5;
+
+      let winnings = Math.floor(wager * multiplier);
+
+      // POWER-UP: Gold Rush bonus
+      if (hasGoldRush) winnings = Math.floor(winnings * 1.4);
+
       const profit = winnings - wager;
       setPlayerState(prev => ({
         ...prev,
@@ -564,7 +916,13 @@ export default function AustraliaRacingGame() {
         currentActivity: null,
         challengeProgress: 0,
       }));
-      addLog(`✅ Completed "${challenge.name}"! Won $${winnings} (profit: $${profit})`, 'success', 'player');
+
+      let logMessage = `✅ Completed "${challenge.name}"! Won $${winnings} (profit: $${profit})`;
+      if (hasGuaranteedWin) logMessage += ' [Guaranteed Win]';
+      if (hasDoubleDown) logMessage += ' [Double Down]';
+      if (hasGoldRush) logMessage += ' [Gold Rush]';
+
+      addLog(logMessage, 'success', 'player');
       showNotification(`🎉 Challenge Success! +$${profit} profit`, 'success');
     } else {
       setPlayerState(prev => ({
@@ -585,29 +943,53 @@ export default function AustraliaRacingGame() {
       return;
     }
 
-    if (cost > playerState.budget) {
+    // POWER-UP: Check for travel power-ups
+    const hasExpressFlight = isPowerUpActive('player', 'express_flight');
+    const hasTouristVisa = isPowerUpActive('player', 'tourist_visa');
+    const hasBudgetAirlines = isPowerUpActive('player', 'budget_airlines');
+    const hasPennyPincher = isPowerUpActive('player', 'penny_pincher');
+
+    // Calculate adjusted cost
+    let adjustedCost = cost;
+    if (hasExpressFlight) adjustedCost -= 50;
+    if (hasBudgetAirlines) adjustedCost = Math.floor(adjustedCost * 0.7);
+    if (hasPennyPincher) adjustedCost = Math.floor(adjustedCost * 0.8);
+    adjustedCost = Math.max(0, adjustedCost); // Can't go negative
+
+    // Calculate adjusted duration
+    let adjustedDuration = duration;
+    if (hasExpressFlight) adjustedDuration *= 0.6; // -40% time
+
+    if (adjustedCost > playerState.budget) {
       showNotification("Insufficient budget for this flight!", 'error');
       return;
     }
 
     setPlayerState(prev => ({
       ...prev,
-      budget: prev.budget - cost,
+      budget: prev.budget - adjustedCost,
       isTraveling: true,
       travelDestination: destination,
       travelProgress: 0,
     }));
 
-    addLog(`✈️ Flying to ${REGIONS[destination].name}... (${duration}s)`, 'info', 'player');
+    let logMsg = `✈️ Flying to ${REGIONS[destination].name}... (${Math.round(adjustedDuration)}s, $${adjustedCost})`;
+    if (hasExpressFlight) logMsg += ' [Express Flight]';
+    if (hasBudgetAirlines) logMsg += ' [Budget Airlines]';
+
+    addLog(logMsg, 'info', 'player');
     setShowTravelModal(false);
+
+    // Consume Express Flight (single-use)
+    if (hasExpressFlight) consumePowerUp('player', 'express_flight');
 
     // Animate travel progress
     const startTime = Date.now();
-    const endTime = startTime + (duration * 1000);
+    const endTime = startTime + (adjustedDuration * 1000);
 
     const progressInterval = setInterval(() => {
       const now = Date.now();
-      const progress = Math.min(100, ((now - startTime) / (duration * 1000)) * 100);
+      const progress = Math.min(100, ((now - startTime) / (adjustedDuration * 1000)) * 100);
       setPlayerState(prev => ({ ...prev, travelProgress: progress }));
 
       if (now >= endTime) {
@@ -616,19 +998,22 @@ export default function AustraliaRacingGame() {
     }, 100);
 
     // Wait for travel to complete
-    await delay(duration * 1000);
+    await delay(adjustedDuration * 1000);
 
     // Check for welcome bonus
     const bonusAwarded = regions[destination].welcomeBonusAvailable;
     let bonusAmount = 0;
 
     if (bonusAwarded) {
-      bonusAmount = 750;
+      bonusAmount = hasTouristVisa ? 1125 : 750; // Tourist Visa boosts bonus
       setRegions(prev => ({
         ...prev,
         [destination]: { ...prev[destination], welcomeBonusAvailable: false },
       }));
-      addLog(`✅ Claimed welcome bonus! +$${bonusAmount}`, 'success', 'player');
+
+      let bonusMsg = `✅ Claimed welcome bonus! +$${bonusAmount}`;
+      if (hasTouristVisa) bonusMsg += ' [Tourist Visa]';
+      addLog(bonusMsg, 'success', 'player');
     }
 
     setPlayerState(prev => ({
@@ -662,28 +1047,70 @@ export default function AustraliaRacingGame() {
       return;
     }
 
+    const region = playerState.currentRegion;
+
+    // POWER-UP: Check if AI has Shield Protocol blocking deposits in player-controlled regions
+    if (regions[region].controller === 'player' && isPowerUpActive('ai', 'shield_protocol')) {
+      showNotification("AI's Shield Protocol is blocking deposits in their regions!", 'error');
+      addLog(`🛡️ Shield Protocol blocked your deposit attempt in ${REGIONS[region].name}`, 'error', 'player');
+      return;
+    }
+
+    // POWER-UP: Check for deposit power-ups
+    const hasIronGrip = isPowerUpActive('player', 'iron_grip');
+    const hasDepositSurge = isPowerUpActive('player', 'deposit_surge');
+    const hasAggressiveTakeover = isPowerUpActive('player', 'aggressive_takeover');
+    const hasPennyPincher = isPowerUpActive('player', 'penny_pincher');
+
+    // Calculate adjusted cost
+    let adjustedCost = amount;
+    if (hasDepositSurge) adjustedCost = Math.floor(amount * 0.5);
+    if (hasPennyPincher) adjustedCost = Math.floor(adjustedCost * 0.8);
+    adjustedCost = Math.max(1, adjustedCost);
+
     // Confirm large deposits (>40% of budget) to prevent costly mistakes
-    const percentOfBudget = (amount / playerState.budget) * 100;
-    if (amount > playerState.budget * 0.4) {
+    const percentOfBudget = (adjustedCost / playerState.budget) * 100;
+    if (adjustedCost > playerState.budget * 0.4) {
       const confirmed = window.confirm(
-        `This will lock $${amount} (${Math.round(percentOfBudget)}% of your budget) in this region.\n\nDeposits are permanent and cannot be withdrawn.\n\nContinue?`
+        `This will lock $${adjustedCost} (${Math.round(percentOfBudget)}% of your budget) in this region.\n\nDeposits are permanent and cannot be withdrawn.\n\nContinue?`
       );
       if (!confirmed) {
         return;
       }
     }
 
-    const region = playerState.currentRegion;
-    const newPlayerDeposit = regions[region].playerDeposit + amount;
-    const aiDeposit = regions[region].aiDeposit;
+    // Consume single-use power-ups
+    if (hasDepositSurge) consumePowerUp('player', 'deposit_surge');
+    if (hasAggressiveTakeover) consumePowerUp('player', 'aggressive_takeover');
+
+    // Calculate effective deposit (Iron Grip multiplies deposit value)
+    let effectiveDeposit = amount;
+    if (hasIronGrip) effectiveDeposit = Math.floor(amount * 1.5);
+
+    const newPlayerDeposit = regions[region].playerDeposit + effectiveDeposit;
+    let aiDeposit = regions[region].aiDeposit;
+
+    // POWER-UP: Fortress reduces AI deposit effectiveness
+    if (isPowerUpActive('player', 'fortress')) {
+      aiDeposit = Math.floor(aiDeposit * 0.75);
+    }
 
     setPlayerState(prev => ({
       ...prev,
-      budget: prev.budget - amount,
+      budget: prev.budget - adjustedCost,
     }));
 
     const wasControlled = regions[region].controller;
-    const newController = newPlayerDeposit > aiDeposit ? 'player' : (aiDeposit > newPlayerDeposit ? 'ai' : null);
+
+    // Calculate control with normal comparison or Aggressive Takeover threshold
+    let newController: 'player' | 'ai' | null;
+    if (hasAggressiveTakeover) {
+      // Only need 75% of AI deposit to take control
+      const threshold = aiDeposit * 0.75;
+      newController = newPlayerDeposit >= threshold ? 'player' : (aiDeposit > newPlayerDeposit ? 'ai' : null);
+    } else {
+      newController = newPlayerDeposit > aiDeposit ? 'player' : (aiDeposit > newPlayerDeposit ? 'ai' : null);
+    }
 
     setRegions(prev => ({
       ...prev,
@@ -694,17 +1121,174 @@ export default function AustraliaRacingGame() {
       },
     }));
 
+    let logMsg = `💰 Deposited $${amount} in ${REGIONS[region].name} (total: $${newPlayerDeposit})`;
+    if (hasIronGrip) logMsg += ' [Iron Grip 1.5x]';
+    if (hasDepositSurge) logMsg += ' [Deposit Surge -50%]';
+    if (hasAggressiveTakeover) logMsg += ' [Aggressive Takeover]';
+
     if (wasControlled !== newController && newController === 'player') {
       addLog(`🏆 You now control ${REGIONS[region].name}! ($${newPlayerDeposit} deposited)`, 'success', 'player');
       setRecentEvents(prev => ({ ...prev, [region]: { type: 'claimed', timestamp: Date.now() } }));
-    } else if (wasControlled !== newController && newController === 'ai') {
-      addLog(`💰 Deposited $${amount} in ${REGIONS[region].name} (total: $${newPlayerDeposit})`, 'info', 'player');
     } else {
-      addLog(`💰 Deposited $${amount} in ${REGIONS[region].name} (total: $${newPlayerDeposit})`, 'info', 'player');
+      addLog(logMsg, 'info', 'player');
     }
 
     setShowDepositModal(false);
   };
+
+  // =========================================
+  // POWER-UP MANAGEMENT FUNCTIONS
+  // =========================================
+
+  // Helper function to check if a specific power-up is active
+  const isPowerUpActive = useCallback((player: 'player' | 'ai', powerUpId: string): boolean => {
+    const state = player === 'player' ? playerState : aiState;
+    return state.activePowerUps.some(p => p.id === powerUpId && !p.usedUp);
+  }, [playerState, aiState]);
+
+  // Get active power-up by ID
+  const getActivePowerUp = useCallback((player: 'player' | 'ai', powerUpId: string): ActivePowerUp | null => {
+    const state = player === 'player' ? playerState : aiState;
+    return state.activePowerUps.find(p => p.id === powerUpId && !p.usedUp) || null;
+  }, [playerState, aiState]);
+
+  // Consume a single-use power-up
+  const consumePowerUp = useCallback((player: 'player' | 'ai', powerUpId: string) => {
+    const setter = player === 'player' ? setPlayerState : setAiState;
+    setter(prev => ({
+      ...prev,
+      activePowerUps: prev.activePowerUps.map(p =>
+        p.id === powerUpId ? { ...p, usedUp: true } : p
+      ),
+    }));
+  }, []);
+
+  // Purchase power-up for player
+  const handlePurchasePowerUp = useCallback((powerUp: PowerUp) => {
+    // Check if already at max power-ups
+    if (playerState.activePowerUps.length >= 5) {
+      showNotification("Maximum 5 active power-ups!", 'error');
+      return;
+    }
+
+    // Check cooldown
+    const now = Date.now();
+    if (now < playerState.powerUpCooldown) {
+      const remaining = Math.ceil((playerState.powerUpCooldown - now) / 1000);
+      showNotification(`Cooldown: ${remaining}s remaining`, 'error');
+      return;
+    }
+
+    // Check affordability
+    if (powerUp.cost > playerState.budget) {
+      showNotification("Insufficient budget!", 'error');
+      return;
+    }
+
+    // Bank Loan special case
+    if (powerUp.id === 'bank_loan') {
+      setPlayerState(prev => ({
+        ...prev,
+        budget: prev.budget + 200,
+        bankLoanDebt: prev.bankLoanDebt + 300,
+        powerUpCooldown: now + 15000,
+      }));
+      addLog(`💰 YOU purchased Bank Loan (+$200 now, -$300 at end)`, 'success', 'player');
+      showNotification("Bank Loan activated! +$200", 'success');
+      return;
+    }
+
+    // Deduct cost
+    setPlayerState(prev => {
+      const newActivePowerUps: ActivePowerUp[] = [
+        ...prev.activePowerUps,
+        {
+          ...powerUp,
+          activatedAt: now,
+          usedUp: false,
+        }
+      ];
+
+      // Handle Sponsorship Deal
+      let newPassiveIncome = prev.passiveIncomeRate;
+      if (powerUp.id === 'sponsorship_deal') {
+        newPassiveIncome = prev.passiveIncomeRate + 1;
+      }
+
+      return {
+        ...prev,
+        budget: prev.budget - powerUp.cost,
+        activePowerUps: newActivePowerUps,
+        powerUpCooldown: now + 15000, // 15 second cooldown
+        passiveIncomeRate: newPassiveIncome,
+      };
+    });
+
+    const durationText = powerUp.isSingleUse ? 'single-use' : `${powerUp.duration / 1000}s`;
+    addLog(`🛍️ YOU purchased ${powerUp.name} ($${powerUp.cost}) - ${durationText}`, 'success', 'player');
+    showNotification(`Power-up activated: ${powerUp.name}`, 'success');
+  }, [playerState, addLog, showNotification]);
+
+  // Purchase power-up for AI
+  const aiPurchasePowerUp = useCallback((powerUp: PowerUp) => {
+    const now = Date.now();
+
+    // Check cooldown
+    if (now < aiStateRef.current.powerUpCooldown) {
+      return;
+    }
+
+    // Check affordability
+    if (powerUp.cost > aiStateRef.current.budget) {
+      return;
+    }
+
+    // Check max power-ups
+    if (aiStateRef.current.activePowerUps.length >= 5) {
+      return;
+    }
+
+    // Bank Loan special case
+    if (powerUp.id === 'bank_loan') {
+      setAiState(prev => ({
+        ...prev,
+        budget: prev.budget + 200,
+        bankLoanDebt: prev.bankLoanDebt + 300,
+        powerUpCooldown: now + 15000,
+      }));
+      addLog(`🤖 AI purchased Bank Loan (+$200 now, -$300 at end)`, 'warning', 'ai');
+      return;
+    }
+
+    // Deduct cost and activate
+    setAiState(prev => {
+      const newActivePowerUps: ActivePowerUp[] = [
+        ...prev.activePowerUps,
+        {
+          ...powerUp,
+          activatedAt: now,
+          usedUp: false,
+        }
+      ];
+
+      // Handle Sponsorship Deal
+      let newPassiveIncome = prev.passiveIncomeRate;
+      if (powerUp.id === 'sponsorship_deal') {
+        newPassiveIncome = prev.passiveIncomeRate + 1;
+      }
+
+      return {
+        ...prev,
+        budget: prev.budget - powerUp.cost,
+        activePowerUps: newActivePowerUps,
+        powerUpCooldown: now + 15000,
+        passiveIncomeRate: newPassiveIncome,
+      };
+    });
+
+    const durationText = powerUp.isSingleUse ? 'single-use' : `${powerUp.duration / 1000}s`;
+    addLog(`🤖 AI purchased ${powerUp.name} ($${powerUp.cost}) - ${durationText}`, 'warning', 'ai');
+  }, [addLog]);
 
   // =========================================
   // AI VALIDATION HELPERS
@@ -934,6 +1518,87 @@ export default function AustraliaRacingGame() {
 
     return value;
   }, [getGamePhase]);
+
+  // =========================================
+  // AI POWER-UP DECISION LOGIC
+  // =========================================
+
+  const aiConsiderPowerUp = useCallback(() => {
+    if (aiActionLockRef.current) return;
+
+    const phase = getGamePhase();
+    const scoreDiff = getScoreDifferential();
+    const budget = aiStateRef.current.budget;
+    const timeRemaining = gameStateRef.current.timeRemaining;
+    const difficulty = aiSettings.difficulty;
+
+    // Difficulty multiplier for spending
+    let spendingMultiplier = 1.0;
+    if (difficulty === 'hard') spendingMultiplier = 1.3;
+    if (difficulty === 'expert') spendingMultiplier = 1.5;
+
+    // EARLY GAME: Conservative, save budget
+    if (phase === 'early') {
+      if (scoreDiff > 2 && budget > 600 * spendingMultiplier) {
+        const luckyStreak = POWERUPS.find(p => p.id === 'lucky_streak');
+        if (luckyStreak) aiPurchasePowerUp(luckyStreak);
+      }
+      return;
+    }
+
+    // MID GAME: Tactical purchases
+    if (phase === 'mid') {
+      if (scoreDiff < -2) { // Losing badly - aggressive comeback
+        if (budget > 300 * spendingMultiplier && Math.random() < 0.5) {
+          const guaranteedWin = POWERUPS.find(p => p.id === 'guaranteed_win');
+          if (guaranteedWin) aiPurchasePowerUp(guaranteedWin);
+        } else if (budget > 250 * spendingMultiplier) {
+          const goldRush = POWERUPS.find(p => p.id === 'gold_rush');
+          if (goldRush) aiPurchasePowerUp(goldRush);
+        }
+      } else if (budget > 500 * spendingMultiplier && Math.random() < 0.3) {
+        const luckyStreak = POWERUPS.find(p => p.id === 'lucky_streak');
+        if (luckyStreak) aiPurchasePowerUp(luckyStreak);
+      }
+      return;
+    }
+
+    // LATE GAME: Strategic power-ups
+    if (phase === 'late') {
+      const playerControlled = Object.keys(regionsRef.current).filter(k => regionsRef.current[k].controller === 'player').length;
+      const aiControlled = Object.keys(regionsRef.current).filter(k => regionsRef.current[k].controller === 'ai').length;
+
+      if (playerControlled > aiControlled) { // Player winning - fight for control
+        if (budget > 220 * spendingMultiplier && Math.random() < 0.4) {
+          const aggressiveTakeover = POWERUPS.find(p => p.id === 'aggressive_takeover');
+          if (aggressiveTakeover) aiPurchasePowerUp(aggressiveTakeover);
+        } else if (budget > 200 * spendingMultiplier && Math.random() < 0.4) {
+          const ironGrip = POWERUPS.find(p => p.id === 'iron_grip');
+          if (ironGrip) aiPurchasePowerUp(ironGrip);
+        }
+      }
+
+      if (budget > 250 * spendingMultiplier && Math.random() < 0.3) {
+        const goldRush = POWERUPS.find(p => p.id === 'gold_rush');
+        if (goldRush) aiPurchasePowerUp(goldRush);
+      }
+      return;
+    }
+
+    // ENDGAME: Spend remaining budget aggressively
+    if (phase === 'endgame' && timeRemaining > 30) {
+      if (budget > 300 * spendingMultiplier && Math.random() < 0.7) {
+        const guaranteedWin = POWERUPS.find(p => p.id === 'guaranteed_win');
+        if (guaranteedWin) aiPurchasePowerUp(guaranteedWin);
+      } else if (budget > 250 * spendingMultiplier && Math.random() < 0.6) {
+        const goldRush = POWERUPS.find(p => p.id === 'gold_rush');
+        if (goldRush) aiPurchasePowerUp(goldRush);
+      } else if (budget > 200 * spendingMultiplier && Math.random() < 0.5) {
+        const aggressiveTakeover = POWERUPS.find(p => p.id === 'aggressive_takeover');
+        if (aggressiveTakeover) aiPurchasePowerUp(aggressiveTakeover);
+      }
+    }
+  }, [getGamePhase, getScoreDifferential, aiPurchasePowerUp, aiSettings.difficulty]);
 
   // =========================================
   // AI DECISION ENGINE (SOPHISTICATED)
@@ -1533,6 +2198,20 @@ export default function AustraliaRacingGame() {
   }, [aiTakeAction, aiSettings]);
 
   // =========================================
+  // AI POWER-UP CONSIDERATION TIMER
+  // =========================================
+
+  useEffect(() => {
+    if (gameState.gameStatus !== 'active') return;
+
+    const powerUpTimer = setInterval(() => {
+      aiConsiderPowerUp();
+    }, 45000); // Every 45 seconds
+
+    return () => clearInterval(powerUpTimer);
+  }, [gameState.gameStatus, aiConsiderPowerUp]);
+
+  // =========================================
   // RENDER
   // =========================================
 
@@ -1688,7 +2367,41 @@ export default function AustraliaRacingGame() {
                   <span>💰 Deposit Money</span>
                   <span className="text-xs opacity-75">D</span>
                 </button>
+                <button
+                  onClick={() => setShowPowerUpModal(true)}
+                  className="w-full bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white px-4 py-2 rounded font-semibold transition-colors flex items-center justify-between"
+                  title="Buy Power-Ups to gain advantages"
+                >
+                  <span>🛍️ Buy Power-Ups</span>
+                  {playerState.activePowerUps.length > 0 && (
+                    <span className="bg-white text-purple-600 text-xs px-2 py-0.5 rounded-full font-bold">
+                      {playerState.activePowerUps.length}
+                    </span>
+                  )}
+                </button>
               </div>
+
+              {/* Active Power-Ups Display */}
+              {playerState.activePowerUps.length > 0 && (
+                <div className="mt-3 p-2 bg-gradient-to-br from-purple-50 to-pink-50 rounded border border-purple-200">
+                  <div className="text-xs font-bold text-purple-700 mb-1">Active Power-Ups:</div>
+                  <div className="space-y-1">
+                    {playerState.activePowerUps.map(pu => {
+                      const timeLeft = pu.isSingleUse
+                        ? (pu.usedUp ? 0 : 999)
+                        : Math.max(0, Math.floor((pu.duration - (Date.now() - pu.activatedAt)) / 1000));
+                      return (
+                        <div key={pu.id} className="text-xs flex items-center justify-between text-purple-900">
+                          <span className="font-semibold">{pu.name}</span>
+                          <span className={`${timeLeft < 10 && !pu.isSingleUse ? 'text-red-600 animate-pulse' : ''}`}>
+                            {pu.isSingleUse ? (pu.usedUp ? '✓' : 'READY') : `${timeLeft}s`}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* AI Panel */}
@@ -2522,6 +3235,104 @@ export default function AustraliaRacingGame() {
               >
                 Reset
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Power-Up Shop Modal */}
+      {showPowerUpModal && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowPowerUpModal(false);
+            }
+          }}
+        >
+          <div className="bg-gradient-to-br from-purple-50 to-pink-50 rounded-lg shadow-2xl max-w-4xl w-full p-6 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
+                  🛍️ Power-Up Shop
+                </h2>
+                <p className="text-sm text-gray-600">Budget: ${playerState.budget}</p>
+              </div>
+              <button
+                onClick={() => setShowPowerUpModal(false)}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                <XCircle className="w-6 h-6" />
+              </button>
+            </div>
+
+            {/* Category Tabs */}
+            <div className="flex gap-2 mb-4 flex-wrap">
+              {['all', 'challenge', 'travel', 'deposit', 'economy'].map(cat => (
+                <button
+                  key={cat}
+                  onClick={() => setSelectedPowerUpCategory(cat as typeof selectedPowerUpCategory)}
+                  className={`px-4 py-2 rounded-lg font-semibold capitalize transition-colors ${
+                    selectedPowerUpCategory === cat
+                      ? 'bg-gradient-to-r from-purple-500 to-pink-500 text-white'
+                      : 'bg-white text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+
+            {/* Power-Ups Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {POWERUPS
+                .filter(pu => selectedPowerUpCategory === 'all' || pu.category === selectedPowerUpCategory)
+                .map(powerUp => {
+                  const canAfford = powerUp.cost <= playerState.budget;
+                  const onCooldown = Date.now() < playerState.powerUpCooldown;
+                  const cooldownRemaining = Math.max(0, Math.ceil((playerState.powerUpCooldown - Date.now()) / 1000));
+                  const isMaxed = playerState.activePowerUps.length >= 5;
+
+                  return (
+                    <div
+                      key={powerUp.id}
+                      className={`border-2 rounded-lg p-4 transition-all ${
+                        canAfford && !onCooldown && !isMaxed
+                          ? 'border-purple-300 bg-white hover:border-purple-500 hover:shadow-lg'
+                          : 'border-gray-200 bg-gray-50 opacity-60'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between mb-2">
+                        <div>
+                          <div className="font-bold text-gray-900">{powerUp.name}</div>
+                          <div className="text-xs text-gray-600 capitalize">{powerUp.category}</div>
+                        </div>
+                        <div className={`text-lg font-bold ${canAfford ? 'text-green-600' : 'text-red-600'}`}>
+                          ${powerUp.cost}
+                        </div>
+                      </div>
+                      <div className="text-sm text-gray-700 mb-3">{powerUp.description}</div>
+                      <div className="text-xs text-gray-500 mb-3">
+                        Duration: {powerUp.isSingleUse ? 'Single-use' : `${powerUp.duration / 1000}s`}
+                      </div>
+                      <button
+                        onClick={() => handlePurchasePowerUp(powerUp)}
+                        disabled={!canAfford || onCooldown || isMaxed}
+                        className={`w-full px-4 py-2 rounded font-semibold transition-colors ${
+                          canAfford && !onCooldown && !isMaxed
+                            ? 'bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white'
+                            : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                        }`}
+                      >
+                        {onCooldown ? `Cooldown: ${cooldownRemaining}s` : isMaxed ? 'Max Power-Ups' : 'BUY'}
+                      </button>
+                    </div>
+                  );
+                })}
+            </div>
+
+            <div className="mt-4 text-center text-sm text-gray-600">
+              {playerState.activePowerUps.length}/5 active power-ups | 15s cooldown between purchases
             </div>
           </div>
         </div>
