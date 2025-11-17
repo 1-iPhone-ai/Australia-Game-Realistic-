@@ -234,6 +234,9 @@ export default function AustraliaRacingGame() {
   const [showTravelModal, setShowTravelModal] = useState(false);
   const [showDepositModal, setShowDepositModal] = useState(false);
   const [showGameOverModal, setShowGameOverModal] = useState(false);
+  const [hoveredRegion, setHoveredRegion] = useState<string | null>(null);
+  const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
+  const [recentEvents, setRecentEvents] = useState<Record<string, { type: 'stolen' | 'claimed' | 'threat'; timestamp: number }>>({});
 
   const aiIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const gameStartTime = useRef<number>(Date.now());
@@ -278,6 +281,54 @@ export default function AustraliaRacingGame() {
   }, [regions]);
 
   // =========================================
+  // SMART DEFAULT VALUE CALCULATIONS
+  // =========================================
+
+  const calculateSmartWager = useCallback((challenge: Challenge): number => {
+    const budget = playerState.budget;
+    const day = gameState.day;
+
+    // Base percentage based on game phase
+    let basePercentage = 0.15; // 15% default
+    if (day === 1) basePercentage = 0.10; // Conservative early game
+    else if (day === 2) basePercentage = 0.15;
+    else if (day === 3) basePercentage = 0.20; // More aggressive
+    else if (day === 4) basePercentage = 0.25; // Very aggressive endgame
+
+    // Adjust by challenge success rate (bet more on safer challenges)
+    const safetyFactor = challenge.baseSuccessChance;
+    basePercentage *= (0.8 + safetyFactor * 0.4); // 80-120% based on safety
+
+    // Calculate base wager
+    let wager = Math.floor(budget * basePercentage);
+
+    // Bounds
+    const minWager = Math.min(50, budget);
+    const maxWager = Math.floor(budget * 0.4); // Max 40% of budget
+
+    return Math.max(minWager, Math.min(maxWager, wager));
+  }, [playerState.budget, gameState.day]);
+
+  const calculateSmartDeposit = useCallback((regionKey: string): number => {
+    const region = regions[regionKey];
+    const budget = playerState.budget;
+
+    // If AI controls, calculate amount to steal
+    if (region.controller === 'ai') {
+      const amountToSteal = region.aiDeposit - region.playerDeposit + 50;
+      return Math.min(amountToSteal, Math.floor(budget * 0.4));
+    }
+
+    // If player controls, suggest defense amount
+    if (region.controller === 'player') {
+      return Math.min(Math.floor(region.playerDeposit * 0.3), Math.floor(budget * 0.2));
+    }
+
+    // If unclaimed, suggest claim amount
+    return Math.min(150, Math.floor(budget * 0.25));
+  }, [regions, playerState.budget]);
+
+  // =========================================
   // REFS SYNC (Keep refs updated)
   // =========================================
 
@@ -293,6 +344,90 @@ export default function AustraliaRacingGame() {
   useEffect(() => {
     regionsRef.current = regions;
   }, [regions]);
+
+  // =========================================
+  // VISUAL ALERTS & EVENTS CLEANUP
+  // =========================================
+
+  useEffect(() => {
+    // Clean up old events after 3 seconds
+    const cleanup = setInterval(() => {
+      const now = Date.now();
+      setRecentEvents(prev => {
+        const updated = { ...prev };
+        Object.keys(updated).forEach(key => {
+          if (now - updated[key].timestamp > 3000) {
+            delete updated[key];
+          }
+        });
+        return updated;
+      });
+    }, 1000);
+
+    return () => clearInterval(cleanup);
+  }, []);
+
+  // =========================================
+  // KEYBOARD SHORTCUTS
+  // =========================================
+
+  useEffect(() => {
+    const handleKeyPress = (e: KeyboardEvent) => {
+      // Don't trigger if typing in input field
+      if (e.target instanceof HTMLInputElement) return;
+
+      // Don't trigger if player is busy or game ended
+      if (gameState.gameStatus !== 'active') return;
+
+      const key = e.key.toLowerCase();
+
+      // ESC - Close all modals
+      if (key === 'escape') {
+        setShowChallengeModal(false);
+        setShowTravelModal(false);
+        setShowDepositModal(false);
+        setSelectedChallenge(null);
+        setSelectedRegion(null);
+        return;
+      }
+
+      // Don't allow other shortcuts if player is busy
+      if (playerState.isBusy || playerState.isTraveling) return;
+
+      // C - Open Challenges
+      if (key === 'c') {
+        setShowChallengeModal(true);
+        setShowTravelModal(false);
+        setShowDepositModal(false);
+      }
+
+      // T - Open Travel
+      if (key === 't') {
+        setShowTravelModal(true);
+        setShowChallengeModal(false);
+        setShowDepositModal(false);
+      }
+
+      // D - Open Deposit
+      if (key === 'd') {
+        setShowDepositModal(true);
+        setShowChallengeModal(false);
+        setShowTravelModal(false);
+      }
+
+      // 1-4 - Select challenge in modal
+      if (showChallengeModal && ['1', '2', '3', '4'].includes(key)) {
+        const index = parseInt(key) - 1;
+        const challenges = REGIONS[playerState.currentRegion].challenges;
+        if (challenges[index]) {
+          setSelectedChallenge(challenges[index]);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, [gameState.gameStatus, playerState.isBusy, playerState.isTraveling, playerState.currentRegion, showChallengeModal]);
 
   // =========================================
   // DAY TIMER (AUTO-ADVANCE)
@@ -486,6 +621,7 @@ export default function AustraliaRacingGame() {
 
     if (wasControlled !== newController && newController === 'player') {
       addLog(`🏆 You now control ${REGIONS[region].name}! ($${newPlayerDeposit} deposited)`, 'success', 'player');
+      setRecentEvents(prev => ({ ...prev, [region]: { type: 'claimed', timestamp: Date.now() } }));
     } else if (wasControlled !== newController && newController === 'ai') {
       addLog(`💰 Deposited $${amount} in ${REGIONS[region].name} (total: $${newPlayerDeposit})`, 'info', 'player');
     } else {
@@ -1158,8 +1294,10 @@ export default function AustraliaRacingGame() {
 
         if (wasControlled === 'player' && newController === 'ai') {
           addLog(`⚠️ AI STOLE ${REGIONS[region].name} from you! ($${newAiDeposit} deposited)`, 'error', 'ai');
+          setRecentEvents(prev => ({ ...prev, [region]: { type: 'stolen', timestamp: Date.now() } }));
         } else if (wasControlled !== newController && newController === 'ai') {
           addLog(`🤖 AI now controls ${REGIONS[region].name}! ($${newAiDeposit})`, 'warning', 'ai');
+          setRecentEvents(prev => ({ ...prev, [region]: { type: 'claimed', timestamp: Date.now() } }));
         } else {
           addLog(`🤖 AI deposited $${amount} in ${REGIONS[region].name}`, 'info', 'ai');
         }
@@ -1284,12 +1422,30 @@ export default function AustraliaRacingGame() {
                 <div className="text-xs text-gray-600">Day</div>
                 <div className="text-xl font-bold text-orange-600">{gameState.day} / 4</div>
               </div>
-              <div className="text-center bg-blue-100 px-4 py-2 rounded">
-                <div className="text-xs text-gray-600 flex items-center gap-1">
+              <div className={`text-center px-4 py-2 rounded transition-colors ${
+                gameState.timeRemaining < 20 ? 'bg-red-100 animate-pulse' :
+                gameState.timeRemaining < 30 ? 'bg-red-100' :
+                gameState.timeRemaining < 60 ? 'bg-yellow-100' :
+                'bg-blue-100'
+              }`}>
+                <div className={`text-xs flex items-center gap-1 ${
+                  gameState.timeRemaining < 30 ? 'text-red-600' :
+                  gameState.timeRemaining < 60 ? 'text-yellow-700' :
+                  'text-gray-600'
+                }`}>
                   <Timer className="w-3 h-3" />
                   Time Left
                 </div>
-                <div className="text-xl font-bold text-blue-600">{formatTime(gameState.timeRemaining)}</div>
+                <div className={`text-xl font-bold ${
+                  gameState.timeRemaining < 30 ? 'text-red-600' :
+                  gameState.timeRemaining < 60 ? 'text-yellow-700' :
+                  'text-blue-600'
+                }`}>
+                  {formatTime(gameState.timeRemaining)}
+                  {gameState.timeRemaining <= 10 && gameState.timeRemaining > 0 && (
+                    <span className="text-sm ml-2 animate-pulse">⚠️</span>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -1345,23 +1501,34 @@ export default function AustraliaRacingGame() {
                 <button
                   onClick={() => setShowChallengeModal(true)}
                   disabled={playerState.isBusy || playerState.isTraveling}
-                  className="w-full bg-purple-500 hover:bg-purple-600 disabled:bg-gray-300 text-white px-4 py-2 rounded font-semibold transition-colors"
+                  className="w-full bg-purple-500 hover:bg-purple-600 disabled:bg-gray-300 disabled:cursor-not-allowed text-white px-4 py-2 rounded font-semibold transition-colors flex items-center justify-between"
+                  title={playerState.isBusy ? 'Busy with challenge' : playerState.isTraveling ? 'Currently traveling' : 'Press C'}
                 >
-                  🎯 Do Challenge
+                  <span>🎯 Do Challenge</span>
+                  <span className="text-xs opacity-75">C</span>
                 </button>
+                {(playerState.isBusy || playerState.isTraveling) && (
+                  <div className="text-xs text-gray-500 text-center -mt-1">
+                    {playerState.isBusy ? '⏳ Busy with challenge...' : '✈️ Currently traveling...'}
+                  </div>
+                )}
                 <button
                   onClick={() => setShowTravelModal(true)}
                   disabled={playerState.isBusy || playerState.isTraveling}
-                  className="w-full bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 text-white px-4 py-2 rounded font-semibold transition-colors"
+                  className="w-full bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed text-white px-4 py-2 rounded font-semibold transition-colors flex items-center justify-between"
+                  title={playerState.isBusy ? 'Busy with challenge' : playerState.isTraveling ? 'Currently traveling' : 'Press T'}
                 >
-                  ✈️ Travel
+                  <span>✈️ Travel</span>
+                  <span className="text-xs opacity-75">T</span>
                 </button>
                 <button
                   onClick={() => setShowDepositModal(true)}
                   disabled={playerState.isBusy || playerState.isTraveling}
-                  className="w-full bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white px-4 py-2 rounded font-semibold transition-colors"
+                  className="w-full bg-green-500 hover:bg-green-600 disabled:bg-gray-300 disabled:cursor-not-allowed text-white px-4 py-2 rounded font-semibold transition-colors flex items-center justify-between"
+                  title={playerState.isBusy ? 'Busy with challenge' : playerState.isTraveling ? 'Currently traveling' : 'Press D'}
                 >
-                  💰 Deposit Money
+                  <span>💰 Deposit Money</span>
+                  <span className="text-xs opacity-75">D</span>
                 </button>
               </div>
             </div>
@@ -1456,21 +1623,41 @@ export default function AustraliaRacingGame() {
                   const state = regions[key];
                   const isPlayerHere = playerState.currentRegion === key;
                   const isAiHere = aiState.currentRegion === key;
+                  const hasRecentEvent = recentEvents[key];
+                  const isHovered = hoveredRegion === key;
+                  const isBothHere = isPlayerHere && isAiHere;
+
+                  // Check if region is under threat (AI has more budget and is nearby)
+                  const isUnderThreat = state.controller === 'player' &&
+                                        aiState.budget > state.playerDeposit - state.aiDeposit + 100 &&
+                                        (isAiHere || Object.keys(FLIGHT_COSTS[aiState.currentRegion] || {}).includes(key));
 
                   return (
                     <div
                       key={key}
-                      className={`absolute w-12 h-12 rounded-full border-4 flex items-center justify-center font-bold text-xs transition-all ${
+                      className={`absolute w-12 h-12 rounded-full border-4 flex items-center justify-center font-bold text-xs transition-all cursor-pointer hover:scale-110 ${
                         state.controller === 'player' ? 'bg-green-400 border-green-600' :
                         state.controller === 'ai' ? 'bg-red-400 border-red-600' :
                         'bg-gray-300 border-gray-500'
-                      }`}
+                      } ${hasRecentEvent?.type === 'stolen' ? 'animate-pulse ring-4 ring-red-500' : ''}
+                      ${hasRecentEvent?.type === 'claimed' ? 'animate-pulse ring-4 ring-green-500' : ''}
+                      ${isUnderThreat ? 'ring-2 ring-yellow-500' : ''}
+                      ${isHovered ? 'scale-125 z-10' : ''}`}
                       style={{
                         left: `${region.position.x}%`,
                         top: `${region.position.y}%`,
                         transform: 'translate(-50%, -50%)',
                       }}
-                      title={`${region.name}\nController: ${state.controller || 'None'}\nYou: $${state.playerDeposit} | AI: $${state.aiDeposit}`}
+                      onMouseEnter={() => setHoveredRegion(key)}
+                      onMouseLeave={() => setHoveredRegion(null)}
+                      onClick={() => {
+                        setSelectedRegion(key);
+                        if (key === playerState.currentRegion) {
+                          setShowDepositModal(true);
+                        } else {
+                          setShowTravelModal(true);
+                        }
+                      }}
                     >
                       <div className="text-center">
                         <div className="text-white drop-shadow">{key}</div>
@@ -1479,10 +1666,72 @@ export default function AustraliaRacingGame() {
                             ★
                           </div>
                         )}
+                        {isBothHere && (
+                          <div className="absolute -bottom-6 left-1/2 transform -translate-x-1/2 bg-orange-600 text-white text-[10px] px-1 rounded whitespace-nowrap font-bold animate-pulse">
+                            ⚔️ BOTH HERE
+                          </div>
+                        )}
+                        {isUnderThreat && !isBothHere && (
+                          <div className="absolute -bottom-6 left-1/2 transform -translate-x-1/2 bg-yellow-600 text-white text-[10px] px-1 rounded whitespace-nowrap">
+                            ⚠️ THREAT
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
                 })}
+
+                {/* Region Tooltip */}
+                {hoveredRegion && (
+                  <div
+                    className="absolute bg-white border-2 border-gray-300 rounded-lg p-3 shadow-xl z-50 pointer-events-none"
+                    style={{
+                      left: `${REGIONS[hoveredRegion].position.x}%`,
+                      top: `${REGIONS[hoveredRegion].position.y}%`,
+                      transform: 'translate(-50%, -120%)',
+                      minWidth: '200px',
+                    }}
+                  >
+                    <div className="text-sm font-bold text-gray-800 mb-2">{REGIONS[hoveredRegion].name}</div>
+                    <div className="text-xs space-y-1">
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Controller:</span>
+                        <span className={`font-semibold ${
+                          regions[hoveredRegion].controller === 'player' ? 'text-green-600' :
+                          regions[hoveredRegion].controller === 'ai' ? 'text-red-600' :
+                          'text-gray-500'
+                        }`}>
+                          {regions[hoveredRegion].controller === 'player' ? 'You ✅' :
+                           regions[hoveredRegion].controller === 'ai' ? 'AI 🤖' :
+                           'None ⚪'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Your Deposit:</span>
+                        <span className="font-semibold text-green-600">${regions[hoveredRegion].playerDeposit}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">AI Deposit:</span>
+                        <span className="font-semibold text-red-600">${regions[hoveredRegion].aiDeposit}</span>
+                      </div>
+                      {regions[hoveredRegion].welcomeBonusAvailable && (
+                        <div className="flex justify-between text-yellow-700 font-bold">
+                          <span>Bonus Available:</span>
+                          <span>★ $750</span>
+                        </div>
+                      )}
+                      {hoveredRegion !== playerState.currentRegion && FLIGHT_COSTS[playerState.currentRegion]?.[hoveredRegion] && (
+                        <div className="flex justify-between border-t pt-1 mt-1">
+                          <span className="text-gray-600">Flight Cost:</span>
+                          <span className="font-semibold">${FLIGHT_COSTS[playerState.currentRegion][hoveredRegion]}</span>
+                        </div>
+                      )}
+                      <div className="text-center mt-2 text-[10px] text-gray-500">
+                        Click to {hoveredRegion === playerState.currentRegion ? 'deposit' : 'travel'}
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {/* Player indicator */}
                 <div
@@ -1561,49 +1810,81 @@ export default function AustraliaRacingGame() {
       {showChallengeModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
-            <h2 className="text-xl font-bold text-gray-800 mb-4">Choose Challenge - {REGIONS[playerState.currentRegion].name}</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold text-gray-800">Choose Challenge - {REGIONS[playerState.currentRegion].name}</h2>
+              <div className="text-xs text-gray-500">Press ESC to close</div>
+            </div>
             <div className="space-y-3 max-h-96 overflow-y-auto">
-              {REGIONS[playerState.currentRegion].challenges.map((challenge, idx) => (
-                <div
-                  key={idx}
-                  className="border border-gray-300 rounded-lg p-3 hover:border-purple-500 cursor-pointer transition-colors"
-                  onClick={() => setSelectedChallenge(challenge)}
-                >
-                  <div className="font-semibold text-gray-800">{challenge.name}</div>
-                  <div className="text-sm text-gray-600 mt-1">
-                    <div>Multiplier: {challenge.multiplier}x</div>
-                    <div>Duration: {challenge.duration}s</div>
-                    <div>Success Rate: {(challenge.baseSuccessChance * 100).toFixed(0)}%</div>
-                  </div>
-                  {selectedChallenge === challenge && (
-                    <div className="mt-3 pt-3 border-t border-gray-200">
-                      <label className="block text-sm font-semibold text-gray-700 mb-1">Wager Amount:</label>
-                      <input
-                        type="number"
-                        id="wager-input"
-                        min="1"
-                        max={playerState.budget}
-                        defaultValue={Math.min(100, playerState.budget)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
-                      />
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const wager = parseInt((document.getElementById('wager-input') as HTMLInputElement).value);
-                          if (wager > 0 && wager <= playerState.budget) {
-                            handlePlayerChallenge(challenge, wager);
-                          } else {
-                            alert('Invalid wager amount!');
-                          }
-                        }}
-                        className="w-full mt-2 bg-purple-500 hover:bg-purple-600 text-white px-4 py-2 rounded font-semibold"
-                      >
-                        Attempt Challenge
-                      </button>
+              {REGIONS[playerState.currentRegion].challenges.map((challenge, idx) => {
+                const smartWager = calculateSmartWager(challenge);
+                const expectedProfit = Math.floor(smartWager * challenge.multiplier * challenge.baseSuccessChance - smartWager * (1 - challenge.baseSuccessChance));
+
+                return (
+                  <div
+                    key={idx}
+                    className={`border-2 rounded-lg p-3 cursor-pointer transition-all ${
+                      selectedChallenge === challenge
+                        ? 'border-purple-500 bg-purple-50'
+                        : 'border-gray-300 hover:border-purple-300'
+                    }`}
+                    onClick={() => setSelectedChallenge(challenge)}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="font-semibold text-gray-800">
+                        {idx + 1}. {challenge.name}
+                        <span className="ml-2 text-xs text-gray-500">(Press {idx + 1})</span>
+                      </div>
+                      {expectedProfit > 0 && (
+                        <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">
+                          +${expectedProfit} avg
+                        </span>
+                      )}
                     </div>
-                  )}
-                </div>
-              ))}
+                    <div className="text-sm text-gray-600 mt-1 flex gap-3">
+                      <div>Multiplier: {challenge.multiplier}x</div>
+                      <div>Duration: {challenge.duration}s</div>
+                      <div className="flex items-center gap-1">
+                        Success: {(challenge.baseSuccessChance * 100).toFixed(0)}%
+                        <span>
+                          {'⭐'.repeat(Math.ceil(challenge.baseSuccessChance * 3))}
+                        </span>
+                      </div>
+                    </div>
+                    {selectedChallenge === challenge && (
+                      <div className="mt-3 pt-3 border-t border-gray-200">
+                        <label className="block text-sm font-semibold text-gray-700 mb-1">
+                          Wager Amount: <span className="text-xs text-gray-500">(Smart: ${smartWager})</span>
+                        </label>
+                        <input
+                          type="number"
+                          id={`wager-input-${idx}`}
+                          min="1"
+                          max={playerState.budget}
+                          defaultValue={smartWager}
+                          className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
+                        />
+                        <div className="text-xs text-gray-500 mt-1">
+                          Available: ${playerState.budget} | Max win: ${Math.floor(smartWager * challenge.multiplier)}
+                        </div>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const wager = parseInt((document.getElementById(`wager-input-${idx}`) as HTMLInputElement).value);
+                            if (wager > 0 && wager <= playerState.budget) {
+                              handlePlayerChallenge(challenge, wager);
+                            } else {
+                              alert('Invalid wager amount!');
+                            }
+                          }}
+                          className="w-full mt-2 bg-purple-500 hover:bg-purple-600 text-white px-4 py-2 rounded font-semibold"
+                        >
+                          Attempt Challenge
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
             <button
               onClick={() => {
@@ -1612,7 +1893,7 @@ export default function AustraliaRacingGame() {
               }}
               className="w-full mt-4 bg-gray-300 hover:bg-gray-400 text-gray-800 px-4 py-2 rounded font-semibold"
             >
-              Cancel
+              Cancel (ESC)
             </button>
           </div>
         </div>
@@ -1622,7 +1903,10 @@ export default function AustraliaRacingGame() {
       {showTravelModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
-            <h2 className="text-xl font-bold text-gray-800 mb-4">Book Flight from {REGIONS[playerState.currentRegion].name}</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold text-gray-800">Book Flight from {REGIONS[playerState.currentRegion].name}</h2>
+              <div className="text-xs text-gray-500">Press ESC to close</div>
+            </div>
             <div className="space-y-2 max-h-96 overflow-y-auto">
               {Object.keys(REGIONS)
                 .filter(key => key !== playerState.currentRegion)
@@ -1659,7 +1943,7 @@ export default function AustraliaRacingGame() {
               onClick={() => setShowTravelModal(false)}
               className="w-full mt-4 bg-gray-300 hover:bg-gray-400 text-gray-800 px-4 py-2 rounded font-semibold"
             >
-              Cancel
+              Cancel (ESC)
             </button>
           </div>
         </div>
@@ -1669,7 +1953,10 @@ export default function AustraliaRacingGame() {
       {showDepositModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
-            <h2 className="text-xl font-bold text-gray-800 mb-4">Deposit in {REGIONS[playerState.currentRegion].name}</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold text-gray-800">Deposit in {REGIONS[playerState.currentRegion].name}</h2>
+              <div className="text-xs text-gray-500">Press ESC to close</div>
+            </div>
 
             <div className="bg-gray-50 p-4 rounded-lg mb-4">
               <div className="space-y-2 text-sm">
@@ -1705,13 +1992,15 @@ export default function AustraliaRacingGame() {
             </div>
 
             <div className="mb-4">
-              <label className="block text-sm font-semibold text-gray-700 mb-2">Deposit Amount:</label>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Deposit Amount: <span className="text-xs text-gray-500">(Smart: ${calculateSmartDeposit(playerState.currentRegion)})</span>
+              </label>
               <input
                 type="number"
                 id="deposit-input"
                 min="1"
                 max={playerState.budget}
-                defaultValue={Math.min(100, playerState.budget)}
+                defaultValue={calculateSmartDeposit(playerState.currentRegion)}
                 className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-green-500"
               />
               <div className="text-xs text-gray-500 mt-1">Available budget: ${playerState.budget}</div>
@@ -1733,7 +2022,7 @@ export default function AustraliaRacingGame() {
                 onClick={() => setShowDepositModal(false)}
                 className="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-800 px-4 py-2 rounded font-semibold"
               >
-                Cancel
+                Cancel (ESC)
               </button>
             </div>
           </div>
