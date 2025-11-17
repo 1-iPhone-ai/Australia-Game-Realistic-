@@ -247,6 +247,7 @@ export default function AustraliaRacingGame() {
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
   const [recentEvents, setRecentEvents] = useState<Record<string, { type: 'stolen' | 'claimed' | 'threat'; timestamp: number }>>({});
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error'; visible: boolean }>({ message: '', type: 'success', visible: false });
+  const [aiLastResult, setAiLastResult] = useState<{ type: 'success' | 'failure'; message: string; timestamp: number } | null>(null);
   const [aiSettings, setAiSettings] = useState<AISettings>({
     difficulty: 'medium',
     actionDelayMin: 20,
@@ -1218,9 +1219,24 @@ export default function AustraliaRacingGame() {
           ...prev,
           isBusy: true,
           currentActivity: `Attempting ${challenge.name}...`,
+          challengeProgress: 0,
         }));
 
         addLog(`🤖 AI attempting "${challenge.name}" ($${wager} wagered)`, 'warning', 'ai');
+
+        // Animate AI challenge progress
+        const startTime = Date.now();
+        const endTime = startTime + (challenge.duration * 1000);
+
+        const progressInterval = setInterval(() => {
+          const now = Date.now();
+          const progress = Math.min(100, ((now - startTime) / (challenge.duration * 1000)) * 100);
+          setAiState(prev => ({ ...prev, challengeProgress: progress }));
+
+          if (now >= endTime) {
+            clearInterval(progressInterval);
+          }
+        }, 100);
 
         await delay(challenge.duration * 1000);
 
@@ -1242,21 +1258,34 @@ export default function AustraliaRacingGame() {
 
         if (success) {
           const winnings = Math.floor(wager * challenge.multiplier);
+          const profit = winnings - wager;
           setAiState(prev => ({
             ...prev,
             budget: prev.budget + winnings,
             isBusy: false,
             currentActivity: null,
+            challengeProgress: 0,
           }));
-          addLog(`🤖 AI completed "${challenge.name}"! Won $${winnings}`, 'warning', 'ai');
+          addLog(`🤖 AI completed "${challenge.name}"! Won $${winnings} (profit: $${profit})`, 'warning', 'ai');
+          setAiLastResult({
+            type: 'success',
+            message: `✅ ${challenge.name} - Won $${winnings}`,
+            timestamp: Date.now()
+          });
         } else {
           setAiState(prev => ({
             ...prev,
             budget: prev.budget - wager,
             isBusy: false,
             currentActivity: null,
+            challengeProgress: 0,
           }));
           addLog(`🤖 AI failed "${challenge.name}". Lost $${wager}`, 'info', 'ai');
+          setAiLastResult({
+            type: 'failure',
+            message: `❌ ${challenge.name} - Lost $${wager}`,
+            timestamp: Date.now()
+          });
         }
       } else if (bestAction.type === 'travel') {
         const { destination, cost, duration } = bestAction.data;
@@ -1670,8 +1699,50 @@ export default function AustraliaRacingGame() {
                 </div>
 
                 {aiState.currentActivity && (
-                  <div className="mt-3 p-2 bg-orange-50 rounded border border-orange-200">
-                    <div className="text-sm font-semibold text-orange-700">{aiState.currentActivity}</div>
+                  <div className={`mt-3 p-2 rounded border ${
+                    aiState.isBusy ? 'bg-orange-50 border-orange-200' :
+                    aiState.isTraveling ? 'bg-blue-50 border-blue-200' :
+                    'bg-gray-50 border-gray-200'
+                  }`}>
+                    <div className={`text-sm font-semibold flex items-center gap-2 ${
+                      aiState.isBusy ? 'text-orange-700' :
+                      aiState.isTraveling ? 'text-blue-700' :
+                      'text-gray-700'
+                    }`}>
+                      {aiState.isBusy && <Zap className="w-4 h-4" />}
+                      {aiState.isTraveling && <Plane className="w-4 h-4" />}
+                      {aiState.currentActivity}
+                    </div>
+                  </div>
+                )}
+
+                {aiState.isBusy && (
+                  <div className="mt-3">
+                    <div className="text-sm text-gray-600 mb-1 flex items-center gap-1">
+                      <Zap className="w-4 h-4" />
+                      Challenge Progress: {Math.round(aiState.challengeProgress)}%
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div
+                        className="bg-orange-500 h-2 rounded-full transition-all duration-300"
+                        style={{ width: `${aiState.challengeProgress}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {aiLastResult && Date.now() - aiLastResult.timestamp < 5000 && !aiState.isBusy && (
+                  <div className={`mt-3 p-3 rounded-lg border-2 ${
+                    aiLastResult.type === 'success'
+                      ? 'bg-green-50 border-green-300'
+                      : 'bg-red-50 border-red-300'
+                  }`}>
+                    <div className={`text-sm font-bold ${
+                      aiLastResult.type === 'success' ? 'text-green-700' : 'text-red-700'
+                    }`}>
+                      {aiLastResult.type === 'success' ? '🎉 Challenge Won!' : '💔 Challenge Failed!'}
+                    </div>
+                    <div className="text-xs text-gray-600 mt-1">{aiLastResult.message}</div>
                   </div>
                 )}
 
